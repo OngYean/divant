@@ -1,0 +1,41 @@
+const { spawn } = require('child_process');
+
+function spawnProcess(cmd, args, opts = {}) {
+  const p = spawn(cmd, args, { stdio: 'inherit', env: process.env, ...opts });
+  p.on('exit', (code, signal) => {
+    if (signal) {
+      console.log(`${cmd} terminated with signal ${signal}`);
+    } else {
+      console.log(`${cmd} exited with code ${code}`);
+    }
+  });
+  p.on('error', (err) => {
+    console.error(`${cmd} failed:`, err);
+  });
+  return p;
+}
+
+console.log('Starting ws-server and Next dev...');
+
+const children = [];
+
+// start ws server
+children.push(spawnProcess(process.execPath, ['server/ws-server.js']));
+
+// start next dev via npm script to respect package.json
+children.push(spawnProcess('npm', ['run', 'dev']));
+
+function shutdown() {
+  console.log('Shutting down child processes...');
+  for (const c of children) {
+    try { c.kill('SIGINT'); } catch (e) {}
+  }
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  shutdown();
+});
