@@ -2,7 +2,7 @@
 
 As the name implies (inspired by the term Divide and Conquer), **Divant** is a web-based utility that helps people split bills easily.
 
-Stay tuned to the deployment of this project once it's feature complete!
+You may try it [https://divant.blueyeskeleton.com](here)! Feel free to report issues on GitHub.
 
 ## Features
 
