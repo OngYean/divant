@@ -199,7 +199,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 		const defaultPort = 3001;
 		const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
 		const host = window.location.hostname;
-		const wsUrl = (window as any).NEXT_PUBLIC_WS_URL || `${proto}://${host}:${defaultPort}`;
+		const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `${proto}://${host}:${defaultPort}`;
 
 		let ws: WebSocket | null = null;
 		let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
