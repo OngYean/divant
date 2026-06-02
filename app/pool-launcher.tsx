@@ -12,6 +12,7 @@ type PoolMember = {
 	joinedAt: string;
 	lastSeenAt: string;
 	isOwner: boolean;
+	paymentLink?: string;
 };
 
 type PoolRecord = {
@@ -145,12 +146,15 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 	const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
 	const [createPoolName, setCreatePoolName] = useState("");
 	const [createOwnerName, setCreateOwnerName] = useState("");
+	const [createPaymentLink, setCreatePaymentLink] = useState("");
+	const [joinPaymentLink, setJoinPaymentLink] = useState("");
 	const [joinCode, setJoinCode] = useState(formatShareCode(initialPoolCode));
 	const [joinName, setJoinName] = useState("");
 	const [notice, setNotice] = useState<{ tone: NoticeTone; title: string; detail: string } | null>(null);
 	const [invitePoolName, setInvitePoolName] = useState<string | null>(null);
 	const [loadingInvitePool, setLoadingInvitePool] = useState(false);
 	const [showShareModal, setShowShareModal] = useState(false);
+	const [showSettleDialog, setShowSettleDialog] = useState<string | null>(null);
 	const isInviteMode = useMemo(() => {
 		if (!poolCode) return false;
 		if (!activeSession) return true;
@@ -466,16 +470,17 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 	}
 
 	async function createPool(nextPoolName: string, nextOwnerName: string) {
+		// optional payment link from state
+		const paymentLink = createPaymentLink.trim() || null;
 		setIsBusy(true);
 		try {
 			const response = await fetch("/api/pools", {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					poolName: nextPoolName,
 					ownerName: nextOwnerName,
+					...(paymentLink ? { paymentLink } : {}),
 				}),
 			});
 			const data = await readJson<ApiResponse<ActiveSession>>(response);
@@ -514,11 +519,10 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 		try {
 			const response = await fetch(`/api/pools/${encodeURIComponent(poolId)}/join`, {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					name: nextJoinName,
+					...(joinPaymentLink.trim() ? { paymentLink: joinPaymentLink.trim() } : {}),
 				}),
 			});
 			const data = await readJson<ApiResponse<ActiveSession>>(response);
@@ -794,7 +798,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 		}
 	}
 
-	async function settleDebtsToUser(creditorId: string) {
+	async function confirmSettle(creditorId: string) {
 		if (!activePool) return;
 		setIsBusy(true);
 		try {
@@ -810,6 +814,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 				title: "Debts Settled",
 				detail: "All your outstanding shares to this member have been marked as paid.",
 			});
+			setShowSettleDialog(null);
 			await reloadData();
 		} catch (error) {
 			setNotice({
@@ -820,6 +825,10 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 		} finally {
 			setIsBusy(false);
 		}
+	}
+
+	async function settleDebtsToUser(creditorId: string) {
+		setShowSettleDialog(creditorId);
 	}
 
 	async function copyInviteLink() {
@@ -1087,7 +1096,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 														disabled={isBusy}
 														className="h-8 px-3 text-xs font-bold text-white bg-emerald-600 rounded-xl border border-emerald-700 hover:bg-emerald-500 disabled:opacity-60 transition cursor-pointer shadow-sm"
 													>
-														Settle Debt
+														Mark as paid
 													</button>
 												</div>
 											</div>
@@ -1488,6 +1497,84 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 					);
 				})()}
 
+				{showSettleDialog !== null && (() => {
+					const creditor = activePool.members.find((m) => m.id === showSettleDialog);
+					if (!creditor) return null;
+					const myBalance = balances[activeMember.id];
+					const owe = myBalance?.owes?.find((o) => o.toUserId === showSettleDialog);
+					const oweAmount = owe ? owe.amount : 0;
+					const currency = bills[0]?.currency || "$";
+
+					return (
+						<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/65 backdrop-blur-sm">
+							<div className="w-full max-w-md rounded-3xl border border-zinc-200 bg-white p-5 shadow-2xl">
+								<div className="flex items-center justify-between mb-4">
+									<h3 className="text-base font-semibold text-zinc-950">Confirm Payment</h3>
+									<button
+										type="button"
+										onClick={() => setShowSettleDialog(null)}
+										className="rounded-full p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition"
+									>
+										<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+											<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+										</svg>
+									</button>
+								</div>
+
+								<div className="mt-3 space-y-4 rounded-2xl border border-emerald-300 bg-emerald-50 p-4">
+									<div className="text-sm text-emerald-950 space-y-2">
+										<p>
+											Are you sure you want to mark all your outstanding debts to <span className="font-bold">{creditor.name}</span> as paid?
+										</p>
+										<p className="text-base font-bold text-emerald-800">
+											Amount to Settle: {currency} {oweAmount.toFixed(2)}
+										</p>
+									</div>
+
+									{/* Hiding payment link related frontend elements
+									{creditor.paymentLink && (
+										<div className="rounded-xl border border-emerald-200 bg-white p-3 text-center">
+											<span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 block mb-1">
+												Creditor Payment Link
+											</span>
+											<a
+												href={creditor.paymentLink}
+												target="_blank"
+												rel="noopener noreferrer"
+												className="break-all text-xs font-semibold text-emerald-600 underline hover:text-emerald-500 cursor-pointer"
+											>
+												{creditor.paymentLink}
+											</a>
+										</div>
+									)}
+									*/}
+
+									<div className="flex gap-2 pt-2">
+										<button
+											type="button"
+											onClick={() => {
+												void confirmSettle(creditor.id);
+											}}
+											disabled={isBusy}
+											className="flex-1 inline-flex h-9 items-center justify-center rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold text-white transition disabled:opacity-60 cursor-pointer"
+										>
+											Settle
+										</button>
+										<button
+											type="button"
+											onClick={() => setShowSettleDialog(null)}
+											disabled={isBusy}
+											className="flex-1 inline-flex h-9 items-center justify-center rounded-lg border border-emerald-300 bg-white text-sm font-semibold text-emerald-900 transition hover:bg-white/50 disabled:opacity-60 cursor-pointer"
+										>
+											Cancel
+										</button>
+									</div>
+								</div>
+							</div>
+						</div>
+					);
+				})()}
+
 				{/* Floating Action Button for New Bill */}
 				<button
 					type="button"
@@ -1509,6 +1596,39 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 				{/* description moved to /pool-info to make space for create/join UI */}
 				<div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[1.05fr_0.95fr]">
 					<Panel title="Create a pool">
+					{/* Hiding payment link and QR related frontend elements
+					<div className="mt-2 space-y-2">
+                  <label className="block text-sm font-medium text-zinc-800" htmlFor="create-payment-link">Payment Link (optional)</label>
+                  <input id="create-payment-link" value={createPaymentLink} onChange={(e) => setCreatePaymentLink(e.target.value)} placeholder="https://pay.example.com" className="h-12 w-full rounded-2xl border border-zinc-300 bg-white px-4 text-base text-zinc-950 outline-none focus:border-emerald-500" />
+                  <input type="file" accept="image/*" id="create-qr-input" className="hidden" onChange={async (e) => {
+                    if (!e.target.files?.[0]) return;
+                    const form = new FormData();
+                    form.append('qr', e.target.files[0]);
+                    try {
+                      const res = await fetch('/api/upload/qr', { method: 'POST', body: form });
+                      const data = await res.json();
+                      if (data.ok && data.url) {
+                        setCreatePaymentLink(data.url);
+                      } else {
+                        setNotice({
+                          tone: 'error',
+                          title: 'QR upload failed',
+                          detail: data.message || 'Unexpected error processing QR code.'
+                        });
+                      }
+                    } catch (err) {
+                      setNotice({
+                        tone: 'error',
+                        title: 'QR upload error',
+                        detail: err instanceof Error ? err.message : String(err)
+                      });
+                    }
+                  }} />
+                  <button type="button" onClick={() => document.getElementById('create-qr-input')?.click()} className="inline-flex items-center px-3 py-2 bg-emerald-600 text-white rounded-md hover:bg-emerald-500">
+                    Upload QR for Link
+                  </button>
+                </div>
+					*/}
 						<form
 							onSubmit={(event) => {
 								event.preventDefault();
@@ -1540,6 +1660,39 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 					</Panel>
 
 					<Panel title="Join a pool" subtitle="You can also join a pool by the invitation link or by scanning the QR code.">
+						{/* Hiding payment link and QR related frontend elements
+						<div className="mt-2 space-y-2">
+                  <label className="block text-sm font-medium text-zinc-800" htmlFor="join-payment-link">Payment Link (optional)</label>
+                  <input id="join-payment-link" value={joinPaymentLink} onChange={(e) => setJoinPaymentLink(e.target.value)} placeholder="https://pay.example.com" className="h-12 w-full rounded-2xl border border-zinc-300 bg-white px-4 text-base text-zinc-950 outline-none focus:border-emerald-500" />
+                  <input type="file" accept="image/*" id="join-qr-input" className="hidden" onChange={async (e) => {
+                    if (!e.target.files?.[0]) return;
+                    const form = new FormData();
+                    form.append('qr', e.target.files[0]);
+                    try {
+                      const res = await fetch('/api/upload/qr', { method: 'POST', body: form });
+                      const data = await res.json();
+                      if (data.ok && data.url) {
+                        setJoinPaymentLink(data.url);
+                      } else {
+                        setNotice({
+                          tone: 'error',
+                          title: 'QR upload failed',
+                          detail: data.message || 'Unexpected error processing QR code.'
+                        });
+                      }
+                    } catch (err) {
+                      setNotice({
+                        tone: 'error',
+                        title: 'QR upload error',
+                        detail: err instanceof Error ? err.message : String(err)
+                      });
+                    }
+                  }} />
+                  <button type="button" onClick={() => document.getElementById('join-qr-input')?.click()} className="inline-flex items-center px-3 py-2 bg-emerald-600 text-white rounded-md hover:bg-emerald-500">
+                    Upload QR for Link
+                  </button>
+                </div>
+						*/}
 						<form
 							onSubmit={(event) => {
 								event.preventDefault();

@@ -23,7 +23,23 @@ const children = [];
 children.push(spawnProcess(process.execPath, ['server/ws-server.js']));
 
 // start next dev via npm script to respect package.json
-children.push(spawnProcess('npm', ['run', 'dev']));
+// start next dev only if not already running
+const http = require('http');
+function checkDevRunning(callback) {
+  const req = http.request({ method: 'GET', host: '127.0.0.1', port: 3000, timeout: 1000 }, (res) => {
+    callback(true);
+  });
+  req.on('error', () => callback(false));
+  req.on('timeout', () => { req.destroy(); callback(false); });
+  req.end();
+}
+checkDevRunning((isRunning) => {
+  if (isRunning) {
+    console.log('Next dev already running, skipping spawn.');
+  } else {
+    children.push(spawnProcess('npm', ['run', 'dev']));
+  }
+});
 
 function shutdown() {
   console.log('Shutting down child processes...');

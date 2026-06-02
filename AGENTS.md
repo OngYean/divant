@@ -87,3 +87,7 @@ The most important principle is that it should be loginless, users simply create
 	- `user(pool_id, normalized_name)` should be unique so a lost cookie can rejoin the same pool by name.
 	- `pool(id)` should be random enough for QR/link sharing and must be unique by definition.
 	- `bill_share(bill_id, user_id)` should be unique.
+
+## TODOs
+
+- [ ] Re-enable payment link input and QR upload/decoding features on the frontend (currently hidden via commented-out React JSX elements in `app/pool-launcher.tsx`).

@@ -16,7 +16,10 @@
     "next": "16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-qr-code": "^2.0.21"
+    "react-qr-code": "^2.0.21",
+    "jimp": "^0.22.10",
+    "qrcode-reader": "^1.0.4",
+    "formidable": "^3.5.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -27,5 +30,9 @@
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "allowScripts": {
+    "sharp@0.34.5": true,
+    "unrs-resolver@1.12.2": true
   }
 }

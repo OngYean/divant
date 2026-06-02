@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 
 import { POOL_SESSION_COOKIE_MAX_AGE, POOL_SESSION_COOKIE_NAME, ensureMySqlSchema } from "../../../lib/mysql";
-import { buildSessionCookieValue, createPoolWithOwner } from "../../../lib/pool-service";
+import { buildSessionCookieValue, createPoolWithOwner, setUserPaymentLink } from "../../../lib/pool-service";
 
 export const runtime = "nodejs";
 
 type CreatePoolBody = {
 	poolName?: unknown;
 	ownerName?: unknown;
+	paymentLink?: unknown;
 };
 
 function setSessionCookie(response: NextResponse, session: { poolId: string; userId: string; sessionToken: string }) {
@@ -27,6 +28,7 @@ export async function POST(request: Request) {
 		const body = (await request.json().catch(() => ({}))) as CreatePoolBody;
 		const poolName = typeof body.poolName === "string" ? body.poolName : "";
 		const ownerName = typeof body.ownerName === "string" ? body.ownerName : "";
+		const paymentLink = typeof body.paymentLink === "string" ? body.paymentLink.trim() : null;
 
 		if (!poolName.trim() || !ownerName.trim()) {
 			return NextResponse.json({ ok: false, message: "Pool name and your name are required." }, { status: 400 });
@@ -34,6 +36,10 @@ export async function POST(request: Request) {
 
 		await ensureMySqlSchema();
 		const created = await createPoolWithOwner(poolName, ownerName);
+		if (paymentLink) {
+			await setUserPaymentLink(created.member.id, paymentLink);
+			created.member.paymentLink = paymentLink;
+		}
 		const response = NextResponse.json({ ok: true, ...created }, { status: 201 });
 		setSessionCookie(response, created.session);
 
@@ -49,10 +55,7 @@ export async function POST(request: Request) {
 		return response;
 	} catch (error) {
 		return NextResponse.json(
-			{
-				ok: false,
-				message: error instanceof Error ? error.message : "Failed to create the pool.",
-			},
+			{ ok: false, message: error instanceof Error ? error.message : "Failed to create the pool." },
 			{ status: 503 },
 		);
 	}

@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 
 import { POOL_SESSION_COOKIE_MAX_AGE, POOL_SESSION_COOKIE_NAME, ensureMySqlSchema } from "../../../../../lib/mysql";
-import { buildSessionCookieValue, joinPoolWithName } from "../../../../../lib/pool-service";
+import { buildSessionCookieValue, joinPoolWithName, setUserPaymentLink } from "../../../../../lib/pool-service";
 
 export const runtime = "nodejs";
 
 type JoinBody = {
 	name?: unknown;
+	paymentLink?: unknown;
 };
 
 function setSessionCookie(response: NextResponse, session: { poolId: string; userId: string; sessionToken: string }) {
@@ -26,6 +27,7 @@ export async function POST(request: Request, context: { params: Promise<{ poolId
 		const { poolId } = await context.params;
 		const body = (await request.json().catch(() => ({}))) as JoinBody;
 		const name = typeof body.name === "string" ? body.name : "";
+		const paymentLink = typeof body.paymentLink === "string" ? body.paymentLink.trim() : null;
 
 		if (!name.trim()) {
 			return NextResponse.json({ ok: false, message: "Your name is required." }, { status: 400 });
@@ -33,6 +35,10 @@ export async function POST(request: Request, context: { params: Promise<{ poolId
 
 		await ensureMySqlSchema();
 		const joined = await joinPoolWithName(poolId, name);
+		if (paymentLink) {
+			await setUserPaymentLink(joined.member.id, paymentLink);
+			joined.member.paymentLink = paymentLink;
+		}
 		const response = NextResponse.json({ ok: true, ...joined }, { status: 200 });
 		setSessionCookie(response, joined.session);
 

@@ -64,6 +64,7 @@ const schemaStatements = [
 		name VARCHAR(120) NOT NULL,
 		normalized_name VARCHAR(120) NOT NULL,
 		session_token_hash CHAR(64) NULL,
+		payment_link VARCHAR(255) NULL,
 		is_owner TINYINT(1) NOT NULL DEFAULT 0,
 		joined_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 		last_seen_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -270,6 +271,17 @@ export async function ensureMySqlSchema(): Promise<SchemaStatus> {
 		}
 	} catch (err) {
 		console.error("Error migrating bill_share schema:", err);
+	}
+
+	// Dynamic schema migration/upgrade for user
+	try {
+		const [columns] = await pool.query("SHOW COLUMNS FROM `user`");
+		const columnNames = (columns as Array<{ Field: string }>).map((c) => c.Field);
+		if (!columnNames.includes("payment_link")) {
+			await pool.query("ALTER TABLE `user` ADD COLUMN `payment_link` VARCHAR(255) NULL");
+		}
+	} catch (err) {
+		console.error("Error migrating user schema:", err);
 	}
 
 	return {

@@ -21,6 +21,7 @@ export type PoolMemberRecord = {
 	joinedAt: string;
 	lastSeenAt: string;
 	isOwner: boolean;
+	paymentLink?: string | null;
 };
 
 export type PoolRecord = {
@@ -71,7 +72,7 @@ export async function loadPoolRecord(poolId: string) {
 	}
 
 	const [memberRows] = await pool.query(
-		"SELECT id, name, normalized_name, joined_at, last_seen_at, is_owner FROM `user` WHERE pool_id = ? ORDER BY is_owner DESC, joined_at ASC",
+		"SELECT id, name, normalized_name, joined_at, last_seen_at, is_owner, payment_link FROM `user` WHERE pool_id = ? ORDER BY is_owner DESC, joined_at ASC",
 		[poolId],
 	);
 
@@ -82,6 +83,7 @@ export async function loadPoolRecord(poolId: string) {
 		joinedAt: toIsoTimestamp(row.joined_at),
 		lastSeenAt: toIsoTimestamp(row.last_seen_at),
 		isOwner: Number(row.is_owner) === 1,
+		paymentLink: row.payment_link ? String(row.payment_link) : null,
 	}));
 
 		return {
@@ -192,7 +194,7 @@ export async function createPoolWithOwner(poolName: string, ownerName: string) {
 			[poolId, normalizedPoolName, now, now, expiresAt],
 		);
 		await connection.query(
-			"INSERT INTO `user` (id, pool_id, name, normalized_name, session_token_hash, is_owner, joined_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+			"INSERT INTO `user` (id, pool_id, name, normalized_name, session_token_hash, is_owner, joined_at, last_seen_at, payment_link) VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL)",
 			[userId, poolId, normalizedOwnerName, normalizeMemberName(normalizedOwnerName), sessionTokenHash, now, now],
 		);
 		await connection.commit();
@@ -267,7 +269,7 @@ export async function joinPoolWithName(poolId: string, memberName: string) {
 		} else {
 			memberId = createMemberId();
 			await connection.query(
-				"INSERT INTO `user` (id, pool_id, name, normalized_name, session_token_hash, is_owner, joined_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+				"INSERT INTO `user` (id, pool_id, name, normalized_name, session_token_hash, is_owner, joined_at, last_seen_at, payment_link) VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL)",
 				[memberId, normalizedPoolId, normalizedMemberName, normalizedLookupName, sessionTokenHash, now, now],
 			);
 		}
@@ -390,6 +392,33 @@ export async function deletePoolWithSession(session: SessionCookieValue) {
 export function getClientSessionCookieName() {
 	return POOL_SESSION_COOKIE_NAME;
 }
+
+/**
+ * Update a user's payment link URL.
+ * This is used when creating a pool or uploading a QR code.
+ */
+export async function setUserPaymentLink(userId: string, paymentLink: string | null): Promise<void> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		throw new Error("Database connection is not available.");
+	}
+
+	const connection = await pool.getConnection();
+	try {
+		await connection.beginTransaction();
+		await connection.query(
+			"UPDATE `user` SET payment_link = ?, last_seen_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
+			[paymentLink, userId]
+		);
+		await connection.commit();
+	} catch (error) {
+		await connection.rollback();
+		throw error;
+	} finally {
+		connection.release();
+	}
+}
+
 
 // Bill types
 export type BillShare = {
