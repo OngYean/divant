@@ -34,9 +34,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-dvh overflow-hidden antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} min-h-screen antialiased`}
     >
-      <body className="flex h-dvh flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.14),_transparent_32%),linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] text-zinc-950">
+      <body className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.14),_transparent_32%),linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] text-zinc-950">
         {children}
       </body>
     </html>

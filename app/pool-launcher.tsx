@@ -100,14 +100,14 @@ function Panel({
 	className?: string;
 }) {
 	return (
-		<section className={`flex min-h-0 flex-col rounded-3xl border border-zinc-200/80 bg-white/90 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] backdrop-blur sm:p-5 ${className}`}>
+		<section className={`flex flex-col rounded-3xl border border-zinc-200/80 bg-white/90 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] backdrop-blur sm:p-5 ${className}`}>
 			{title || subtitle ? (
 				<div className="mb-3 sm:mb-4">
 					{title ? <h2 className="text-base font-semibold text-zinc-950">{title}</h2> : null}
 					{subtitle ? <p className="mt-1 text-sm leading-6 text-zinc-600">{subtitle}</p> : null}
 				</div>
 			) : null}
-			<div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-1">{children}</div>
+			<div className="overflow-x-hidden pr-1">{children}</div>
 		</section>
 	);
 }
@@ -741,7 +741,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 
 	if (!sessionLoaded) {
 		return (
-			<main className="flex items-center justify-center overflow-hidden px-3 py-3 text-zinc-950 sm:px-4">
+			<main className="flex items-center justify-center min-h-screen px-3 py-3 text-zinc-950 sm:px-4">
 				<div className="w-full max-w-sm">
 					<div className="mb-5 text-center sm:mb-8">
 						<p className="animate-pulse text-xs font-semibold uppercase tracking-[0.24em] text-emerald-600">Divant</p>
@@ -862,8 +862,8 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 
 	if (activePool && activeMember) {
 		return (
-			<main className="flex overflow-hidden px-3 py-3 text-zinc-950 sm:px-4 lg:px-6">
-				<div className="mx-auto flex min-h-0 w-full max-w-5xl flex-col gap-3">
+			<main className="w-full px-3 py-3 text-zinc-950 sm:px-4 lg:px-6">
+				<div className="mx-auto w-full max-w-5xl flex flex-col gap-3">
 					<header className="rounded-[1.5rem] border border-zinc-200 bg-white/85 p-4 shadow-sm flex items-center justify-between gap-3">
 						<div>
 							<p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-600">Current pool</p>
@@ -875,19 +875,37 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 						</div>
 					</header>
 
-					<div className="grid min-h-0 flex-1 gap-3 grid-cols-[4fr_8fr]">
+					<div className="grid gap-3 grid-cols-[5fr_7fr]">
 						<Panel>
-							<div className="flex h-full items-center justify-center py-6">
+							<div className="flex flex-col gap-2 h-full justify-center py-4">
 								<button
 									type="button"
 									onClick={() => setShowShareModal(true)}
-									className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-6 text-sm font-semibold text-white shadow-md transition hover:bg-emerald-500 active:scale-95 cursor-pointer"
+									className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 text-sm font-semibold text-white shadow-md transition hover:bg-emerald-500 active:scale-95 cursor-pointer"
 								>
 									<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
 										<path strokeLinecap="round" strokeLinejoin="round" d="M8.684 10.742l-1.996-1.141c-.496-.283-.496-.994 0-1.278l1.996-1.141m0 7.636l1.996 1.141m0 0a3 3 0 103-5.278 3 3 0 00-3 5.278zM6 16a3 3 0 100-6 3 3 0 000 6zm10-8a3 3 0 100-6 3 3 0 000 6z" />
 									</svg>
 									Invite
 								</button>
+								<button
+									type="button"
+									onClick={leavePool}
+									disabled={isBusy}
+									className="inline-flex h-12 w-full items-center justify-center rounded-2xl border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-400 hover:bg-zinc-50 disabled:opacity-60 cursor-pointer"
+								>
+									Leave pool
+								</button>
+								{activeMember.isOwner ? (
+									<button
+										type="button"
+										onClick={deletePool}
+										disabled={isBusy}
+										className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-rose-600 px-4 text-sm font-semibold text-white transition hover:bg-rose-500 disabled:opacity-60 cursor-pointer"
+									>
+										Delete pool
+									</button>
+								) : null}
 							</div>
 						</Panel>
 
@@ -905,89 +923,8 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 									</div>
 								))}
 							</div>
-							<div className="mt-3 flex flex-wrap gap-2 sm:mt-4 sm:gap-3">
-								<button type="button" onClick={leavePool} disabled={isBusy} className="inline-flex h-12 items-center justify-center rounded-2xl border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-400 hover:bg-zinc-50 disabled:opacity-60">
-									Leave pool
-								</button>
-								{activeMember.isOwner ? (
-									<button type="button" onClick={deletePool} disabled={isBusy} className="inline-flex h-12 items-center justify-center rounded-2xl bg-rose-600 px-4 text-sm font-semibold text-white transition hover:bg-rose-500 disabled:opacity-60">
-										Delete pool
-									</button>
-								) : null}
-							</div>
 						</Panel>
 					</div>
-
-					<Panel title="Bills & Splits" subtitle="Track expenses and who owes whom.">
-						{bills.length === 0 ? (
-							<div className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 p-4 text-center text-sm text-zinc-600">
-								No bills yet. Create one to get started.
-							</div>
-						) : (
-							<div className="space-y-2">
-								{bills.map((bill) => {
-									const creator = activePool.members.find((m) => m.id === bill.createdByUserId);
-									const isEditing = editingBillId === bill.id;
-									return (
-										<div key={bill.id}>
-											{isEditing ? (
-												<BillForm
-													isBusy={isBusy}
-													poolMembers={activePool.members}
-													currentUserId={activeMember.id}
-													initialTitle={bill.title}
-													initialAmount={bill.totalAmount.toString()}
-													initialSplitMode={bill.splitMode}
-													initialShares={bill.shares}
-													onSubmit={updateBillData}
-													onCancel={() => setEditingBillId(null)}
-													accentColor="yellow"
-												/>
-											) : (
-												<div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
-													<div className="flex items-start justify-between gap-2">
-														<div className="flex-1 min-w-0">
-															<div className="font-semibold text-zinc-950 truncate">{bill.title}</div>
-															<div className="text-xs text-zinc-600 mt-1">
-																{creator?.name} • {bill.totalAmount.toFixed(2)} {bill.currency}
-															</div>
-														</div>
-														<div className="flex gap-1">
-															<button
-																type="button"
-																onClick={() => {
-																	setEditingBillId(bill.id);
-																}}
-																disabled={isBusy}
-																className="h-7 px-2 text-xs font-semibold text-zinc-700 rounded border border-zinc-300 hover:bg-zinc-100 disabled:opacity-60"
-															>
-																Edit
-															</button>
-															<button
-																type="button"
-																onClick={() => removeBill(bill.id)}
-																disabled={isBusy}
-																className="h-7 px-2 text-xs font-semibold text-rose-700 rounded border border-rose-300 hover:bg-rose-100 disabled:opacity-60"
-															>
-																Delete
-															</button>
-														</div>
-													</div>
-												</div>
-											)}
-										</div>
-									);
-								})}
-							</div>
-						)}
-						<button
-							type="button"
-							onClick={() => setShowCreateBill(true)}
-							className="mt-3 inline-flex h-10 items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-3 text-sm font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
-						>
-							New bill
-						</button>
-					</Panel>
 
 					<Panel title="Balances" subtitle="Who you owe after all expenses.">
 						{(() => {
@@ -1020,6 +957,53 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 								</div>
 							);
 						})()}
+					</Panel>
+
+					<Panel title="Bills & Splits" subtitle="Track expenses and who owes whom.">
+						{bills.length === 0 ? (
+							<div className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 p-4 text-center text-sm text-zinc-600">
+								No bills yet. Create one to get started.
+							</div>
+						) : (
+							<div className="space-y-2">
+								{bills.map((bill) => {
+									const creator = activePool.members.find((m) => m.id === bill.createdByUserId);
+									return (
+										<div key={bill.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
+											<div className="flex items-start justify-between gap-2">
+												<div className="flex-1 min-w-0">
+													<div className="font-semibold text-zinc-950 truncate">{bill.title}</div>
+													<div className="text-xs text-zinc-600 mt-1">
+														{creator?.name} • {bill.totalAmount.toFixed(2)} {bill.currency}
+													</div>
+												</div>
+												<div className="flex gap-1">
+													<button
+														type="button"
+														onClick={() => {
+															setEditingBillId(bill.id);
+														}}
+														disabled={isBusy}
+														className="h-7 px-2 text-xs font-semibold text-zinc-700 rounded border border-zinc-300 hover:bg-zinc-100 disabled:opacity-60"
+													>
+														Edit
+													</button>
+													<button
+														type="button"
+														onClick={() => removeBill(bill.id)}
+														disabled={isBusy}
+														className="h-7 px-2 text-xs font-semibold text-rose-700 rounded border border-rose-300 hover:bg-rose-100 disabled:opacity-60"
+													>
+														Delete
+													</button>
+												</div>
+											</div>
+										</div>
+									);
+								})}
+							</div>
+						)}
+
 					</Panel>
 				</div>
 
@@ -1128,13 +1112,61 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 						</div>
 					</div>
 				)}
+
+				{editingBillId !== null && (() => {
+					const editingBill = bills.find((b) => b.id === editingBillId);
+					if (!editingBill) return null;
+					return (
+						<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/65 backdrop-blur-sm">
+							<div className="w-full max-w-lg rounded-3xl border border-zinc-200 bg-white p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+								<div className="flex items-center justify-between mb-4">
+									<h3 className="text-base font-semibold text-zinc-950">Edit Bill</h3>
+									<button
+										type="button"
+										onClick={() => setEditingBillId(null)}
+										className="rounded-full p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition"
+									>
+										<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+											<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+										</svg>
+									</button>
+								</div>
+
+								<BillForm
+									isBusy={isBusy}
+									poolMembers={activePool.members}
+									currentUserId={activeMember.id}
+									initialTitle={editingBill.title}
+									initialAmount={editingBill.totalAmount.toString()}
+									initialSplitMode={editingBill.splitMode}
+									initialShares={editingBill.shares}
+									onSubmit={updateBillData}
+									onCancel={() => setEditingBillId(null)}
+									accentColor="yellow"
+								/>
+							</div>
+						</div>
+					);
+				})()}
+
+				{/* Floating Action Button for New Bill */}
+				<button
+					type="button"
+					onClick={() => setShowCreateBill(true)}
+					className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-600/25 transition-all duration-300 hover:bg-emerald-500 hover:scale-110 active:scale-95 cursor-pointer"
+					aria-label="New bill"
+				>
+					<svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+						<path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+					</svg>
+				</button>
 			</main>
 		);
 	}
 
 	return (
-		<main className="flex overflow-hidden px-3 py-3 text-zinc-950 sm:px-4 lg:px-6">
-			<div className="mx-auto flex min-h-0 w-full max-w-5xl flex-col gap-3">
+		<main className="w-full px-3 py-3 text-zinc-950 sm:px-4 lg:px-6">
+			<div className="mx-auto w-full max-w-5xl flex flex-col gap-3">
 				{/* description moved to /pool-info to make space for create/join UI */}
 				<div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[1.05fr_0.95fr]">
 					<Panel title="Create a pool">

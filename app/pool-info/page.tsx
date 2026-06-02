@@ -1,7 +1,7 @@
 export default function PoolInfoPage() {
     return (
-    <main className="flex overflow-hidden px-3 py-3 text-zinc-950 sm:px-4 lg:px-6">
-      <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-col gap-3">
+    <main className="w-full px-3 py-3 text-zinc-950 sm:px-4 lg:px-6">
+      <div className="mx-auto w-full max-w-5xl flex flex-col gap-3">
         <header className="overflow-hidden rounded-[2rem] border border-zinc-200 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.18),_transparent_34%),linear-gradient(180deg,_rgba(255,255,255,0.95),_rgba(248,250,252,0.94))] p-4 shadow-[0_28px_70px_rgba(15,23,42,0.08)] sm:p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-600">Divant</p>
           <h1 className="mt-2 max-w-xl text-3xl font-semibold tracking-tight text-zinc-950 sm:mt-3 sm:text-5xl">Divide and Transfer. Start splitting your bill hassle-free now.</h1>
