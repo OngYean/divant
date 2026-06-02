@@ -32,6 +32,9 @@ type BillShare = {
 	userId: string;
 	shareAmount: number;
 	shareValue?: number;
+	isPaid?: boolean;
+	offsetAmount?: number;
+	paidAt?: string;
 };
 
 type Bill = {
@@ -166,6 +169,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 	const [balances, setBalances] = useState<Record<string, UserBalance>>({});
 	const [showCreateBill, setShowCreateBill] = useState(false);
 	const [editingBillId, setEditingBillId] = useState<number | null>(null);
+	const [showPaymentProgressBillId, setShowPaymentProgressBillId] = useState<number | null>(null);
 
 	const wsRef = useRef<WebSocket | null>(null);
 	const activePoolRef = useRef<string | null>(null);
@@ -713,6 +717,81 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 		}
 	}
 
+	async function reloadData() {
+		if (!activePool) return;
+		try {
+			const billsResp = await fetch(`/api/pools/${activePool.id}/bills`, { cache: "no-store" });
+			if (billsResp.ok) {
+				const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
+				setBills(billsData.bills ?? []);
+			}
+			const balancesResp = await fetch(`/api/pools/${activePool.id}/balances`, { cache: "no-store" });
+			if (balancesResp.ok) {
+				const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
+				setBalances(balancesData.balances ?? {});
+			}
+		} catch (e) {
+			console.error("Failed to reload data:", e);
+		}
+	}
+
+	async function toggleSharePaid(billId: number, targetUserId: string, isPaid: boolean, resetOffset?: boolean) {
+		if (!activePool) return;
+		setIsBusy(true);
+		try {
+			const response = await fetch(`/api/pools/${activePool.id}/bills/${billId}/shares`, {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ isPaid, userId: targetUserId, resetOffset }),
+			});
+			if (!response.ok) throw new Error("Failed to update payment status");
+			setNotice({
+				tone: "success",
+				title: resetOffset ? "Offset reverted" : (isPaid ? "Share cleared" : "Payment reverted"),
+				detail: resetOffset
+					? "The offset has been reverted and choices restored."
+					: (isPaid ? "The share has been marked as paid." : "The share has been marked as unpaid."),
+			});
+			await reloadData();
+		} catch (error) {
+			setNotice({
+				tone: "error",
+				title: "Could not update payment status",
+				detail: error instanceof Error ? error.message : "Try again in a moment.",
+			});
+		} finally {
+			setIsBusy(false);
+		}
+	}
+
+	async function offsetMutualDebts(partnerId: string) {
+		if (!activePool) return;
+		setIsBusy(true);
+		try {
+			const response = await fetch(`/api/pools/${activePool.id}/balances/offset`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ partnerId }),
+			});
+			if (!response.ok) throw new Error("Failed to offset mutual debts");
+
+			setNotice({
+				tone: "success",
+				title: "Mutual Debts Offset",
+				detail: "Your mutual outstanding debts have been cancelled out.",
+			});
+			await reloadData();
+		} catch (error) {
+			setNotice({
+				tone: "error",
+				title: "Could not offset debts",
+				detail: error instanceof Error ? error.message : "Try again in a moment.",
+			});
+		} finally {
+			setIsBusy(false);
+		}
+	}
+
 	async function copyInviteLink() {
 		if (!inviteUrl) {
 			return;
@@ -943,14 +1022,34 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 								<div className="space-y-2">
 									{myOwes.map((owe) => {
 										const creditor = activePool.members.find((m) => m.id === owe.toUserId);
+										const myOwedFromCreditor = myBalance?.owed?.find((o) => o.fromUserId === owe.toUserId)?.amount || 0;
+										const hasMutualDebt = myOwedFromCreditor > 0.005;
+
 										return (
-											<div key={owe.toUserId} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3 flex justify-between items-center">
-												<span className="text-sm font-medium text-zinc-700">
-													You owe <span className="font-semibold text-zinc-950">{creditor?.name || owe.toUserId}</span>
-												</span>
-												<span className="text-sm font-semibold text-rose-600">
-													{owe.amount.toFixed(2)}
-												</span>
+											<div key={owe.toUserId} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3 flex flex-col gap-2 shadow-sm">
+												<div className="flex justify-between items-center w-full">
+													<span className="text-sm font-medium text-zinc-700">
+														You owe <span className="font-semibold text-zinc-950">{creditor?.name || owe.toUserId}</span>
+													</span>
+													<span className="text-sm font-semibold text-rose-600">
+														{owe.amount.toFixed(2)}
+													</span>
+												</div>
+												{hasMutualDebt && (
+													<div className="flex items-center justify-between border-t border-zinc-200/60 pt-2 mt-1">
+														<span className="text-xs text-zinc-500 font-medium">
+															They owe you: <span className="font-semibold text-emerald-600">{myOwedFromCreditor.toFixed(2)}</span>
+														</span>
+														<button
+															type="button"
+															onClick={() => offsetMutualDebts(owe.toUserId)}
+															disabled={isBusy}
+															className="h-7 px-2.5 text-xs font-bold text-emerald-700 bg-emerald-50 rounded-xl border border-emerald-300 hover:bg-emerald-100 disabled:opacity-60 transition cursor-pointer shadow-sm"
+														>
+															Cancel Out Offset
+														</button>
+													</div>
+												)}
 											</div>
 										);
 									})}
@@ -969,12 +1068,12 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 								{bills.map((bill) => {
 									const creator = activePool.members.find((m) => m.id === bill.createdByUserId);
 									return (
-										<div key={bill.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
+										<div key={bill.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3 shadow-sm">
 											<div className="flex items-start justify-between gap-2">
 												<div className="flex-1 min-w-0">
 													<div className="font-semibold text-zinc-950 truncate">{bill.title}</div>
 													<div className="text-xs text-zinc-600 mt-1">
-														{creator?.name} • {bill.totalAmount.toFixed(2)} {bill.currency}
+														{creator?.name} • {bill.currency} {bill.totalAmount.toFixed(2)}
 													</div>
 												</div>
 												<div className="flex gap-1">
@@ -998,6 +1097,73 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 													</button>
 												</div>
 											</div>
+
+											{(() => {
+												const myShare = bill.shares.find((s) => s.userId === activeMember.id);
+												const isCreator = bill.createdByUserId === activeMember.id;
+												const paidSharesCount = bill.shares.filter((s) => s.isPaid).length;
+												const totalSharesCount = bill.shares.length;
+
+												if (!myShare && !isCreator) return null;
+
+												return (
+													<div className="mt-2.5 pt-2 border-t border-zinc-200/60 flex flex-wrap items-center justify-between gap-2">
+														{myShare && (
+															<div className="flex items-center justify-between w-full sm:w-auto gap-2">
+																<span className="text-xs text-zinc-500 font-medium">
+																	Your Share: <span className="font-semibold text-zinc-950">{bill.currency} {myShare.shareAmount.toFixed(2)}</span>
+																	{myShare.offsetAmount !== undefined && myShare.offsetAmount > 0.005 && !myShare.isPaid && (
+																		<span className="text-zinc-500"> ({(myShare.shareAmount - myShare.offsetAmount).toFixed(2)} left)</span>
+																	)}
+																</span>
+																{myShare.isPaid ? (
+																	myShare.offsetAmount !== undefined && myShare.offsetAmount >= myShare.shareAmount ? (
+																		<button
+																			type="button"
+																			onClick={() => toggleSharePaid(bill.id, activeMember.id, false, true)}
+																			disabled={isBusy}
+																			className="inline-flex items-center gap-1 text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-full border border-purple-200 hover:bg-purple-100 transition cursor-pointer"
+																		>
+																			✓ Offset
+																		</button>
+																	) : (
+																		<button
+																			type="button"
+																			onClick={() => toggleSharePaid(bill.id, activeMember.id, false)}
+																			disabled={isBusy}
+																			className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 hover:bg-emerald-100 transition cursor-pointer"
+																		>
+																			✓ Paid
+																		</button>
+																	)
+																) : (
+																	<button
+																		type="button"
+																		onClick={() => toggleSharePaid(bill.id, activeMember.id, true)}
+																		disabled={isBusy}
+																		className="h-6 px-2 text-[11px] font-bold text-emerald-700 bg-emerald-50 rounded-lg border border-emerald-300 hover:bg-emerald-100 disabled:opacity-60 transition cursor-pointer shadow-sm"
+																	>
+																		Clear Share
+																	</button>
+																)}
+															</div>
+														)}
+
+														{isCreator && (
+															<button
+																type="button"
+																onClick={() => setShowPaymentProgressBillId(bill.id)}
+																className="inline-flex items-center gap-1.5 text-xs font-semibold text-zinc-700 hover:text-zinc-950 bg-white px-2.5 py-1 rounded-xl border border-zinc-300 hover:bg-zinc-50 transition cursor-pointer shadow-sm ml-auto"
+															>
+																<svg className="w-3.5 h-3.5 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+																	<path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+																</svg>
+																Payments: {paidSharesCount} / {totalSharesCount} paid
+															</button>
+														)}
+													</div>
+												);
+											})()}
 										</div>
 									);
 								})}
@@ -1144,6 +1310,91 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 									onCancel={() => setEditingBillId(null)}
 									accentColor="yellow"
 								/>
+							</div>
+						</div>
+					);
+				})()}
+
+				{showPaymentProgressBillId !== null && (() => {
+					const targetBill = bills.find((b) => b.id === showPaymentProgressBillId);
+					if (!targetBill) return null;
+					return (
+						<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/65 backdrop-blur-sm">
+							<div className="w-full max-w-md rounded-3xl border border-zinc-200 bg-white p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+								<div className="flex items-center justify-between mb-4">
+									<h3 className="text-base font-semibold text-zinc-950">Track Payments</h3>
+									<button
+										type="button"
+										onClick={() => setShowPaymentProgressBillId(null)}
+										className="rounded-full p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition"
+									>
+										<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+											<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+										</svg>
+									</button>
+								</div>
+
+								<div className="mb-4">
+									<h4 className="text-sm font-bold text-zinc-950">{targetBill.title}</h4>
+									<p className="text-xs text-zinc-500 mt-0.5">
+										Total: {targetBill.currency} {targetBill.totalAmount.toFixed(2)}
+									</p>
+								</div>
+
+								<div className="space-y-2">
+									{targetBill.shares.map((share) => {
+										const member = activePool.members.find((m) => m.id === share.userId);
+										const isMe = share.userId === activeMember.id;
+										return (
+											<div key={share.userId} className="flex items-center justify-between p-3 rounded-2xl border border-zinc-200 bg-zinc-50">
+												<div className="min-w-0 flex-1">
+													<div className="text-sm font-semibold text-zinc-950 truncate">
+														{member?.name || share.userId} {isMe && "(you)"}
+													</div>
+													<div className="text-xs text-zinc-500 mt-0.5">
+														Owes {targetBill.currency} {share.shareAmount.toFixed(2)}
+														{share.offsetAmount !== undefined && share.offsetAmount > 0.005 && !share.isPaid && (
+															<span className="text-zinc-500"> ({(share.shareAmount - share.offsetAmount).toFixed(2)} left)</span>
+														)}
+													</div>
+												</div>
+												<div className="flex items-center gap-2">
+													<span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${share.isPaid
+														? (share.offsetAmount !== undefined && share.offsetAmount >= share.shareAmount
+															? "bg-purple-50 text-purple-700 border-purple-200"
+															: "bg-emerald-50 text-emerald-700 border-emerald-200")
+														: "bg-amber-50 text-amber-700 border-amber-200"
+														}`}>
+														{share.isPaid
+															? (share.offsetAmount !== undefined && share.offsetAmount >= share.shareAmount ? "Offset" : "Paid")
+															: "Pending"}
+													</span>
+													<button
+														type="button"
+														onClick={() => {
+															if (share.isPaid && share.offsetAmount !== undefined && share.offsetAmount >= share.shareAmount) {
+																toggleSharePaid(targetBill.id, share.userId, false, true);
+															} else {
+																toggleSharePaid(targetBill.id, share.userId, !share.isPaid);
+															}
+														}}
+														disabled={isBusy}
+														className={`h-7 px-2.5 text-xs font-bold rounded-xl border transition cursor-pointer ${share.isPaid
+															? (share.offsetAmount !== undefined && share.offsetAmount >= share.shareAmount
+																? "text-purple-700 bg-purple-50/50 border-purple-300 hover:bg-purple-100"
+																: "text-zinc-700 bg-white border-zinc-300 hover:bg-zinc-100")
+															: "text-emerald-700 bg-emerald-50 border-emerald-300 hover:bg-emerald-100"
+															}`}
+													>
+														{share.isPaid
+															? (share.offsetAmount !== undefined && share.offsetAmount >= share.shareAmount ? "Revert Offset" : "Mark Pending")
+															: "Mark Paid"}
+													</button>
+												</div>
+											</div>
+										);
+									})}
+								</div>
 							</div>
 						</div>
 					);

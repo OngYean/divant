@@ -6,6 +6,7 @@ import {
 	loadPoolBills,
 	type BillShare,
 } from "@/lib/pool-service";
+import { ensureMySqlSchema } from "@/lib/mysql";
 
 export const runtime = "nodejs";
 
@@ -18,6 +19,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ poo
 	}
 
 	try {
+		await ensureMySqlSchema();
 		const active = await loadSessionFromCookieValue(session);
 		if (!active || active.pool.id !== poolId) {
 			return NextResponse.json({ error: "Pool not found or access denied" }, { status: 403 });
@@ -40,7 +42,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ poo
 			session.userId,
 			body.title,
 			body.totalAmount,
-			body.currency || "USD",
+			body.currency || "RM",
 			body.splitMode,
 			body.shares as BillShare[],
 		);
@@ -69,6 +71,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ pool
 	}
 
 	try {
+		await ensureMySqlSchema();
 		const active = await loadSessionFromCookieValue(session);
 		if (!active || active.pool.id !== poolId) {
 			return NextResponse.json({ error: "Pool not found or access denied" }, { status: 403 });

@@ -22,6 +22,10 @@ The most important principle is that it should be loginless, users simply create
 
 - User session persistence can be done via cookie. In case cookie is lost, the user can join back the same pool by entering their previously used name.
 
+- Clearing Bills: Members can settle their outstanding share of a bill explicitly. Additionally, if two members mutually owe each other, either user can manually trigger a mutual debt offset/cancellation to reduce outstanding balances by the smaller mutual debt amount.
+
+- Payment Status Tracking: Bill creators can view the payment progress (e.g. `2 / 5 paid`) of their bills and tap on it to view/toggle payment status for other members. Debtors can toggle/clear their own shares directly.
+
 ## Infrastructure
 
 - Database: MySQL optimized for large amount of writes, initialize schema first if not found
@@ -78,7 +82,7 @@ The most important principle is that it should be loginless, users simply create
 	- `pool(id<PK>: string, name, created_at, last_active_at, expires_at)`
 	- `user(id<PK>: string, pool_id<FK>: pool, name, normalized_name, session_token_hash, is_owner, joined_at, last_seen_at)`
 	- `bill(id<PK>: int, pool_id<FK>: pool, created_by_user_id<FK>: user, title, total_amount, currency, split_mode, created_at, updated_at)`
-	- `bill_share(id<PK>: int, bill_id<FK>: bill, user_id<FK>: user, share_type, share_value, share_amount)`
+	- `bill_share(id<PK>: int, bill_id<FK>: bill, user_id<FK>: user, share_type, share_value, share_amount, is_paid, offset_amount, paid_at)`
 - Constraints:
 	- `user(pool_id, normalized_name)` should be unique so a lost cookie can rejoin the same pool by name.
 	- `pool(id)` should be random enough for QR/link sharing and must be unique by definition.

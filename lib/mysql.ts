@@ -100,6 +100,9 @@ const schemaStatements = [
 		share_type ENUM('equal', 'custom', 'fixed') NOT NULL,
 		share_value DECIMAL(12,2) NULL,
 		share_amount DECIMAL(12,2) NOT NULL,
+		is_paid TINYINT(1) NOT NULL DEFAULT 0,
+		offset_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+		paid_at TIMESTAMP(3) NULL,
 		PRIMARY KEY (id),
 		UNIQUE KEY uk_bill_share_bill_user (bill_id, user_id),
 		KEY idx_bill_share_bill_id (bill_id),
@@ -250,6 +253,23 @@ export async function ensureMySqlSchema(): Promise<SchemaStatus> {
 
 	for (const statement of schemaStatements) {
 		await pool.query(statement);
+	}
+
+	// Dynamic schema migration/upgrade for bill_share
+	try {
+		const [columns] = await pool.query("SHOW COLUMNS FROM `bill_share`");
+		const columnNames = (columns as Array<{ Field: string }>).map((c) => c.Field);
+		if (!columnNames.includes("is_paid")) {
+			await pool.query("ALTER TABLE `bill_share` ADD COLUMN `is_paid` TINYINT(1) NOT NULL DEFAULT 0");
+		}
+		if (!columnNames.includes("offset_amount")) {
+			await pool.query("ALTER TABLE `bill_share` ADD COLUMN `offset_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00");
+		}
+		if (!columnNames.includes("paid_at")) {
+			await pool.query("ALTER TABLE `bill_share` ADD COLUMN `paid_at` TIMESTAMP(3) NULL");
+		}
+	} catch (err) {
+		console.error("Error migrating bill_share schema:", err);
 	}
 
 	return {

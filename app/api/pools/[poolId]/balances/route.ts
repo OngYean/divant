@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { loadSessionFromCookieValue, readSessionCookie, calculatePoolBalances } from "@/lib/pool-service";
+import { ensureMySqlSchema } from "@/lib/mysql";
 
 export const runtime = "nodejs";
 
@@ -12,6 +13,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ pool
 	}
 
 	try {
+		await ensureMySqlSchema();
 		const active = await loadSessionFromCookieValue(session);
 		if (!active || active.pool.id !== poolId) {
 			return NextResponse.json({ error: "Pool not found or access denied" }, { status: 403 });

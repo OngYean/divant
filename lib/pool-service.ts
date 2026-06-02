@@ -396,6 +396,9 @@ export type BillShare = {
 	userId: string;
 	shareAmount: number;
 	shareValue?: number;
+	isPaid?: boolean;
+	offsetAmount?: number;
+	paidAt?: string;
 };
 
 export type Bill = {
@@ -496,7 +499,7 @@ export async function loadBill(billId: number): Promise<Bill | null> {
 	}
 
 	const [shareRows] = await pool.query(
-		"SELECT user_id, share_type, share_value, share_amount FROM `bill_share` WHERE bill_id = ?",
+		"SELECT user_id, share_type, share_value, share_amount, is_paid, offset_amount, paid_at FROM `bill_share` WHERE bill_id = ?",
 		[billId],
 	);
 	const shareRecords = shareRows as Array<Record<string, unknown>>;
@@ -504,6 +507,9 @@ export async function loadBill(billId: number): Promise<Bill | null> {
 		userId: String(row.user_id),
 		shareAmount: parseFloat(String(row.share_amount)),
 		shareValue: row.share_value ? parseFloat(String(row.share_value)) : undefined,
+		isPaid: Number(row.is_paid) === 1,
+		offsetAmount: row.offset_amount ? parseFloat(String(row.offset_amount)) : 0,
+		paidAt: row.paid_at ? toIsoTimestamp(row.paid_at) : undefined,
 	}));
 
 	return {
@@ -535,7 +541,7 @@ export async function loadPoolBills(poolId: string): Promise<Bill[]> {
 	const bills: Bill[] = [];
 	for (const billRow of billRecords) {
 		const [shareRows] = await pool.query(
-			"SELECT user_id, share_type, share_value, share_amount FROM `bill_share` WHERE bill_id = ?",
+			"SELECT user_id, share_type, share_value, share_amount, is_paid, offset_amount, paid_at FROM `bill_share` WHERE bill_id = ?",
 			[billRow.id],
 		);
 		const shareRecords = shareRows as Array<Record<string, unknown>>;
@@ -543,6 +549,9 @@ export async function loadPoolBills(poolId: string): Promise<Bill[]> {
 			userId: String(row.user_id),
 			shareAmount: parseFloat(String(row.share_amount)),
 			shareValue: row.share_value ? parseFloat(String(row.share_value)) : undefined,
+			isPaid: Number(row.is_paid) === 1,
+			offsetAmount: row.offset_amount ? parseFloat(String(row.offset_amount)) : 0,
+			paidAt: row.paid_at ? toIsoTimestamp(row.paid_at) : undefined,
 		}));
 
 		bills.push({
@@ -691,7 +700,9 @@ export async function calculatePoolBalances(poolId: string): Promise<Record<stri
 
 		// For each share, the user owes the bill creator
 		for (const share of bill.shares) {
-			const shareAmount = share.shareAmount;
+			if (share.isPaid) continue;
+			const shareAmount = share.shareAmount - (share.offsetAmount || 0);
+			if (shareAmount <= 0) continue;
 
 			// Track who owes whom
 			if (!balances[share.userId]) {
@@ -720,4 +731,140 @@ export async function calculatePoolBalances(poolId: string): Promise<Record<stri
 	}
 
 	return balances;
+}
+
+export async function setBillSharePaidStatus(billId: number, userId: string, isPaid: boolean, resetOffset?: boolean): Promise<void> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		throw new Error("Database connection is not available.");
+	}
+
+	const bill = await loadBill(billId);
+	if (!bill) {
+		throw new Error("Bill not found.");
+	}
+
+	const share = bill.shares.find((s) => s.userId === userId);
+	if (!share) {
+		throw new Error("User share not found on this bill.");
+	}
+
+	const now = isPaid ? new Date() : null;
+
+	if (resetOffset) {
+		const creatorId = bill.createdByUserId;
+		// Revert offset for both sides (User A owing User B, and User B owing User A) inside this pool
+		await pool.query(
+			`UPDATE \`bill_share\` bs
+			 INNER JOIN \`bill\` b ON bs.bill_id = b.id
+			 SET bs.is_paid = 0, bs.offset_amount = 0.00, bs.paid_at = NULL
+			 WHERE b.pool_id = ? 
+			   AND ((bs.user_id = ? AND b.created_by_user_id = ?) OR (bs.user_id = ? AND b.created_by_user_id = ?))`,
+			[bill.poolId, userId, creatorId, creatorId, userId],
+		);
+	} else {
+		// Note: Explicitly setting paid status does NOT overwrite offset_amount. 
+		// This preserves mutual offset states when toggling payments.
+		await pool.query(
+			"UPDATE `bill_share` SET is_paid = ?, paid_at = ? WHERE bill_id = ? AND user_id = ?",
+			[isPaid ? 1 : 0, now, billId, userId],
+		);
+	}
+
+	await pool.query("UPDATE `pool` SET last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [bill.poolId]);
+}
+
+export async function cancelOffsettingDebts(poolId: string, userAId: string, userBId: string): Promise<void> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		throw new Error("Database connection is not available.");
+	}
+
+	const connection = await pool.getConnection();
+	try {
+		await connection.beginTransaction();
+
+		// Fetch all unpaid shares where userA owes userB (bill created by userB, userA is a share member)
+		const [sharesAtoBRows] = await connection.query(
+			`SELECT bs.id, bs.share_amount, bs.offset_amount, bs.is_paid 
+			 FROM \`bill_share\` bs 
+			 INNER JOIN \`bill\` b ON bs.bill_id = b.id 
+			 WHERE b.pool_id = ? AND bs.user_id = ? AND b.created_by_user_id = ? AND bs.is_paid = 0
+			 ORDER BY b.created_at ASC`,
+			[poolId, userAId, userBId]
+		);
+		const sharesAtoB = (sharesAtoBRows as Array<Record<string, unknown>>).map(row => ({
+			id: Number(row.id),
+			shareAmount: parseFloat(String(row.share_amount)),
+			offsetAmount: parseFloat(String(row.offset_amount || 0)),
+		}));
+
+		// Fetch all unpaid shares where userB owes userA (bill created by userA, userB is a share member)
+		const [sharesBtoARows] = await connection.query(
+			`SELECT bs.id, bs.share_amount, bs.offset_amount, bs.is_paid 
+			 FROM \`bill_share\` bs 
+			 INNER JOIN \`bill\` b ON bs.bill_id = b.id 
+			 WHERE b.pool_id = ? AND bs.user_id = ? AND b.created_by_user_id = ? AND bs.is_paid = 0
+			 ORDER BY b.created_at ASC`,
+			[poolId, userBId, userAId]
+		);
+		const sharesBtoA = (sharesBtoARows as Array<Record<string, unknown>>).map(row => ({
+			id: Number(row.id),
+			shareAmount: parseFloat(String(row.share_amount)),
+			offsetAmount: parseFloat(String(row.offset_amount || 0)),
+		}));
+
+		// Calculate total outstanding amounts
+		let totalAtoB = sharesAtoB.reduce((sum, s) => sum + (s.shareAmount - s.offsetAmount), 0);
+		let totalBtoA = sharesBtoA.reduce((sum, s) => sum + (s.shareAmount - s.offsetAmount), 0);
+
+		if (totalAtoB <= 0 || totalBtoA <= 0) {
+			// No offsetting possible
+			await connection.commit();
+			return;
+		}
+
+		// The amount to cancel is the minimum of the two totals
+		const offsetAmount = Math.min(totalAtoB, totalBtoA);
+
+		// Helper to apply offset to a list of shares
+		const applyOffset = async (sharesList: typeof sharesAtoB, amountToReduce: number) => {
+			let remaining = amountToReduce;
+			for (const share of sharesList) {
+				if (remaining <= 0) break;
+				const outstanding = share.shareAmount - share.offsetAmount;
+				if (outstanding <= remaining) {
+					// This share is fully offset/paid
+					const newOffsetAmount = share.shareAmount;
+					await connection.query(
+						"UPDATE `bill_share` SET is_paid = 1, offset_amount = ?, paid_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
+						[newOffsetAmount, share.id]
+					);
+					remaining -= outstanding;
+				} else {
+					// This share is partially offset
+					const newOffsetAmount = share.offsetAmount + remaining;
+					await connection.query(
+						"UPDATE `bill_share` SET offset_amount = ? WHERE id = ?",
+						[newOffsetAmount, share.id]
+					);
+					remaining = 0;
+				}
+			}
+		};
+
+		// Apply the offset to both sides
+		await applyOffset(sharesAtoB, offsetAmount);
+		await applyOffset(sharesBtoA, offsetAmount);
+
+		// Update pool activity timestamp
+		await connection.query("UPDATE `pool` SET last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [poolId]);
+
+		await connection.commit();
+	} catch (error) {
+		await connection.rollback();
+		throw error;
+	} finally {
+		connection.release();
+	}
 }

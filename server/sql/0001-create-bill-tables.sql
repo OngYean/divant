@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS `bill` (
   `created_by_user_id` VARCHAR(32) NOT NULL,
   `title` VARCHAR(255) NOT NULL,
   `total_amount` DECIMAL(10, 2) NOT NULL,
-  `currency` VARCHAR(3) NOT NULL DEFAULT 'USD',
+  `currency` VARCHAR(3) NOT NULL DEFAULT 'RM',
   `split_mode` ENUM('equal', 'custom', 'fixed') NOT NULL DEFAULT 'equal',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
