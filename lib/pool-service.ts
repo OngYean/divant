@@ -868,3 +868,28 @@ export async function cancelOffsettingDebts(poolId: string, userAId: string, use
 		connection.release();
 	}
 }
+
+/**
+ * Settle all debts from `debtorId` to `creditorId` within a pool.
+ * This marks all unpaid bill_share rows as paid where the debtor owes the creditor
+ * (i.e. bills created by creditor where debtor has an unpaid share).
+ */
+export async function settleAllDebtsToUser(poolId: string, debtorId: string, creditorId: string): Promise<void> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		throw new Error("Database connection is not available.");
+	}
+
+	await pool.query(
+		`UPDATE \`bill_share\` bs
+		 INNER JOIN \`bill\` b ON bs.bill_id = b.id
+		 SET bs.is_paid = 1, bs.paid_at = CURRENT_TIMESTAMP(3)
+		 WHERE b.pool_id = ?
+		   AND bs.user_id = ?
+		   AND b.created_by_user_id = ?
+		   AND bs.is_paid = 0`,
+		[poolId, debtorId, creditorId],
+	);
+
+	await pool.query("UPDATE `pool` SET last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [poolId]);
+}

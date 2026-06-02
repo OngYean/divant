@@ -794,6 +794,34 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 		}
 	}
 
+	async function settleDebtsToUser(creditorId: string) {
+		if (!activePool) return;
+		setIsBusy(true);
+		try {
+			const response = await fetch(`/api/pools/${activePool.id}/balances/settle`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ creditorId }),
+			});
+			if (!response.ok) throw new Error("Failed to settle debts");
+
+			setNotice({
+				tone: "success",
+				title: "Debts Settled",
+				detail: "All your outstanding shares to this member have been marked as paid.",
+			});
+			await reloadData();
+		} catch (error) {
+			setNotice({
+				tone: "error",
+				title: "Could not settle debts",
+				detail: error instanceof Error ? error.message : "Try again in a moment.",
+			});
+		} finally {
+			setIsBusy(false);
+		}
+	}
+
 	async function copyInviteLink() {
 		if (!inviteUrl) {
 			return;
@@ -1052,6 +1080,16 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 														</button>
 													</div>
 												)}
+												<div className="flex items-center justify-end border-t border-zinc-200/60 pt-2 mt-1">
+													<button
+														type="button"
+														onClick={() => settleDebtsToUser(owe.toUserId)}
+														disabled={isBusy}
+														className="h-8 px-3 text-xs font-bold text-white bg-emerald-600 rounded-xl border border-emerald-700 hover:bg-emerald-500 disabled:opacity-60 transition cursor-pointer shadow-sm"
+													>
+														Settle Debt
+													</button>
+												</div>
 											</div>
 										);
 									})}
@@ -1143,33 +1181,18 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 																</span>
 																{myShare.isPaid ? (
 																	myShare.offsetAmount !== undefined && myShare.offsetAmount >= myShare.shareAmount ? (
-																		<button
-																			type="button"
-																			onClick={() => toggleSharePaid(bill.id, activeMember.id, false, true)}
-																			disabled={isBusy}
-																			className="inline-flex items-center gap-1 text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-full border border-purple-200 hover:bg-purple-100 transition cursor-pointer"
-																		>
+																		<span className="inline-flex items-center gap-1 text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-full border border-purple-200">
 																			✓ Offset
-																		</button>
+																		</span>
 																	) : (
-																		<button
-																			type="button"
-																			onClick={() => toggleSharePaid(bill.id, activeMember.id, false)}
-																			disabled={isBusy}
-																			className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 hover:bg-emerald-100 transition cursor-pointer"
-																		>
+																		<span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
 																			✓ Paid
-																		</button>
+																		</span>
 																	)
 																) : (
-																	<button
-																		type="button"
-																		onClick={() => toggleSharePaid(bill.id, activeMember.id, true)}
-																		disabled={isBusy}
-																		className="h-6 px-2 text-[11px] font-bold text-emerald-700 bg-emerald-50 rounded-lg border border-emerald-300 hover:bg-emerald-100 disabled:opacity-60 transition cursor-pointer shadow-sm"
-																	>
-																		Clear Share
-																	</button>
+																	<span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+																		Unpaid
+																	</span>
 																)}
 															</div>
 														)}
