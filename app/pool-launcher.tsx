@@ -170,6 +170,8 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 	const [showCreateBill, setShowCreateBill] = useState(false);
 	const [editingBillId, setEditingBillId] = useState<number | null>(null);
 	const [showPaymentProgressBillId, setShowPaymentProgressBillId] = useState<number | null>(null);
+	const [showViewBillId, setShowViewBillId] = useState<number | null>(null);
+	const [showMySharesOnly, setShowMySharesOnly] = useState<boolean>(true);
 
 	const wsRef = useRef<WebSocket | null>(null);
 	const activePoolRef = useRef<string | null>(null);
@@ -1065,8 +1067,21 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 							</div>
 						) : (
 							<div className="space-y-2">
-								{bills.map((bill) => {
+								<div className="flex items-center mb-2">
+									<input
+										type="checkbox"
+										id="showMySharesOnly"
+										checked={showMySharesOnly}
+										onChange={() => setShowMySharesOnly(!showMySharesOnly)}
+										className="mr-2"
+									/>
+									<label htmlFor="showMySharesOnly" className="text-sm text-zinc-700">
+										Show my shares only
+									</label>
+								</div>
+								{(showMySharesOnly && activeMember ? bills.filter(b => b.shares.some(s => s.userId === activeMember.id)) : bills).map((bill) => {
 									const creator = activePool.members.find((m) => m.id === bill.createdByUserId);
+									const isCreator = bill.createdByUserId === activeMember.id;
 									return (
 										<div key={bill.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3 shadow-sm">
 											<div className="flex items-start justify-between gap-2">
@@ -1077,34 +1092,44 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 													</div>
 												</div>
 												<div className="flex gap-1">
-													<button
-														type="button"
-														onClick={() => {
-															setEditingBillId(bill.id);
-														}}
-														disabled={isBusy}
-														className="h-7 px-2 text-xs font-semibold text-zinc-700 rounded border border-zinc-300 hover:bg-zinc-100 disabled:opacity-60"
-													>
-														Edit
-													</button>
-													<button
-														type="button"
-														onClick={() => removeBill(bill.id)}
-														disabled={isBusy}
-														className="h-7 px-2 text-xs font-semibold text-rose-700 rounded border border-rose-300 hover:bg-rose-100 disabled:opacity-60"
-													>
-														Delete
-													</button>
+													{isCreator ? (
+														<>
+															<button
+																type="button"
+																onClick={() => {
+																	setEditingBillId(bill.id);
+																}}
+																disabled={isBusy}
+																className="h-7 px-2 text-xs font-semibold text-zinc-700 rounded border border-zinc-300 hover:bg-zinc-100 disabled:opacity-60"
+															>
+																Edit
+															</button>
+															<button
+																type="button"
+																onClick={() => removeBill(bill.id)}
+																disabled={isBusy}
+																className="h-7 px-2 text-xs font-semibold text-rose-700 rounded border border-rose-300 hover:bg-rose-100 disabled:opacity-60"
+															>
+																Delete
+															</button>
+														</>
+													) : (
+														<button
+															type="button"
+															onClick={() => setShowViewBillId(bill.id)}
+															disabled={isBusy}
+															className="h-7 px-2 text-xs font-semibold text-indigo-700 rounded border border-indigo-300 hover:bg-indigo-100 disabled:opacity-60"
+														>
+															View
+														</button>
+													)}
 												</div>
 											</div>
 
 											{(() => {
 												const myShare = bill.shares.find((s) => s.userId === activeMember.id);
-												const isCreator = bill.createdByUserId === activeMember.id;
 												const paidSharesCount = bill.shares.filter((s) => s.isPaid).length;
 												const totalSharesCount = bill.shares.length;
-
-												if (!myShare && !isCreator) return null;
 
 												return (
 													<div className="mt-2.5 pt-2 border-t border-zinc-200/60 flex flex-wrap items-center justify-between gap-2">
@@ -1310,6 +1335,43 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 									onCancel={() => setEditingBillId(null)}
 									accentColor="yellow"
 								/>
+							</div>
+						</div>
+					);
+				})()}
+
+				{showViewBillId !== null && (() => {
+					const viewBill = bills.find((b) => b.id === showViewBillId);
+					if (!viewBill) return null;
+					return (
+						<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/65 backdrop-blur-sm">
+							<div className="w-full max-w-lg rounded-3xl border border-zinc-200 bg-white p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+								<div className="flex items-center justify-between mb-4">
+									<h3 className="text-base font-semibold text-zinc-950">Bill Details</h3>
+									<button
+										type="button"
+										onClick={() => setShowViewBillId(null)}
+										className="rounded-full p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition"
+									>
+										<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+											<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+										</svg>
+									</button>
+								</div>
+								<div className="space-y-2">
+									<p className="font-semibold">Title: {viewBill.title}</p>
+									<p>Total: {viewBill.currency} {viewBill.totalAmount.toFixed(2)}</p>
+									<p>Created by: {activePool.members.find(m => m.id === viewBill.createdByUserId)?.name}</p>
+									<h4 className="mt-2 font-semibold">Shares</h4>
+									<ul className="list-disc list-inside">
+										{viewBill.shares.map((s) => (
+											<li key={s.userId}>
+												{activePool.members.find(m => m.id === s.userId)?.name || s.userId}: {viewBill.currency} {s.shareAmount.toFixed(2)}
+												{s.isPaid ? " (Paid)" : ""}
+											</li>
+										))}
+									</ul>
+								</div>
 							</div>
 						</div>
 					);
