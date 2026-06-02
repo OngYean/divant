@@ -180,6 +180,9 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 	const wsRef = useRef<WebSocket | null>(null);
 	const activePoolRef = useRef<string | null>(null);
 	const activeMemberRef = useRef<PoolMember | null>(null);
+	const reloadSequenceRef = useRef<number>(0);
+	const reloadDataRef = useRef<(() => Promise<void>) | null>(null);
+	reloadDataRef.current = reloadData;
 
 	// Auto-dismiss notice after 5 seconds
 	useEffect(() => {
@@ -190,93 +193,106 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 		return () => clearTimeout(timer);
 	}, [notice]);
 
-	// open websocket connection once
+	// open websocket connection once and handle auto-reconnect
 	useEffect(() => {
 		if (typeof window === 'undefined') return;
 		const defaultPort = 3001;
 		const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
 		const host = window.location.hostname;
 		const wsUrl = (window as any).NEXT_PUBLIC_WS_URL || `${proto}://${host}:${defaultPort}`;
-		const ws = new WebSocket(wsUrl);
-		wsRef.current = ws;
 
-		ws.onopen = () => {
-			console.debug('ws connected', wsUrl);
-			// if we already know of an active pool, subscribe immediately
-			const pid = activePoolRef.current;
-			if (pid) {
+		let ws: WebSocket | null = null;
+		let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+		let delay = 1000; // Start with 1s delay
+		let isUnmounted = false;
+
+		function connect() {
+			if (isUnmounted) return;
+			console.debug('Connecting to WS...', wsUrl);
+			ws = new WebSocket(wsUrl);
+			wsRef.current = ws;
+
+			ws.onopen = () => {
+				if (isUnmounted) return;
+				console.debug('ws connected', wsUrl);
+				delay = 1000; // reset delay on successful connection
+				// if we already know of an active pool, subscribe immediately
+				const pid = activePoolRef.current;
+				if (pid) {
+					try {
+						ws?.send(JSON.stringify({ type: 'subscribe', poolId: pid }));
+						console.debug('ws sent subscribe on open', pid);
+					} catch (e) { }
+				}
+			};
+
+			ws.onmessage = (ev) => {
+				if (isUnmounted) return;
+				console.debug('ws onmessage raw', ev.data);
 				try {
-					ws.send(JSON.stringify({ type: 'subscribe', poolId: pid }));
-					console.debug('ws sent subscribe on open', pid);
-				} catch (e) { }
-			}
-		};
+					const msg = JSON.parse(ev.data);
+					console.debug('ws onmessage', msg);
+					const { type, poolId, member } = msg;
 
-		ws.onmessage = (ev) => {
-			console.debug('ws onmessage raw', ev.data);
-			try {
-				const msg = JSON.parse(ev.data);
-				console.debug('ws onmessage', msg);
-				const { type, poolId, member } = msg;
+					// ignore subscribed ack on client; server-driven broadcasts will arrive
+					if (!type) return;
 
-				// ignore subscribed ack on client; server-driven broadcasts will arrive
-				if (!type) return;
+					if (type === 'member_joined') {
+						setActiveSession((prev) => {
+							if (!prev || prev.pool.id !== poolId) return prev;
+							const exists = prev.pool.members.find((m) => m.id === member.id);
+							if (exists) return prev;
+							const nextPool = { ...prev.pool, members: [...prev.pool.members, member] };
+							return { ...prev, pool: nextPool };
+						});
+					}
 
-				if (type === 'member_joined') {
-					setActiveSession((prev) => {
-						if (!prev || prev.pool.id !== poolId) return prev;
-						const exists = prev.pool.members.find((m) => m.id === member.id);
-						if (exists) return prev;
-						const nextPool = { ...prev.pool, members: [...prev.pool.members, member] };
-						return { ...prev, pool: nextPool };
-					});
+					if (type === 'member_left') {
+						setActiveSession((prev) => {
+							if (!prev || prev.pool.id !== poolId) return prev;
+							const nextPool = { ...prev.pool, members: prev.pool.members.filter((m) => m.id !== member.id) };
+							return { ...prev, pool: nextPool };
+						});
+					}
+
+					if (type === 'pool_deleted') {
+						setActiveSession((prev) => (prev && prev.pool.id === poolId ? null : prev));
+						setNotice({ tone: 'info', title: 'Pool removed', detail: 'This pool was deleted.' });
+					}
+
+					if (type === 'bill_created' || type === 'bill_updated' || type === 'bill_deleted') {
+						void reloadDataRef.current?.();
+					}
+				} catch (e) {
+					// ignore parse errors
 				}
+			};
 
-				if (type === 'member_left') {
-					setActiveSession((prev) => {
-						if (!prev || prev.pool.id !== poolId) return prev;
-						const nextPool = { ...prev.pool, members: prev.pool.members.filter((m) => m.id !== member.id) };
-						return { ...prev, pool: nextPool };
-					});
-				}
+			ws.onclose = (ev) => {
+				wsRef.current = null;
+				if (isUnmounted) return;
+				console.debug(`ws closed: code=${ev.code}, reason=${ev.reason}. Reconnecting in ${delay}ms...`);
+				reconnectTimer = setTimeout(() => {
+					connect();
+				}, delay);
+				// Exponential backoff with a cap of 30s
+				delay = Math.min(delay * 2, 30000);
+			};
 
-				if (type === 'pool_deleted') {
-					setActiveSession((prev) => (prev && prev.pool.id === poolId ? null : prev));
-					setNotice({ tone: 'info', title: 'Pool removed', detail: 'This pool was deleted.' });
-				}
+			ws.onerror = (err) => {
+				console.error('ws error:', err);
+				// Let close event handle reconnection
+			};
+		}
 
-				if (type === 'bill_created' || type === 'bill_updated' || type === 'bill_deleted') {
-					// Reload bills and balances when any bill change occurs
-					(async () => {
-						if (!activePoolRef.current) return;
-						try {
-							const billsResp = await fetch(`/api/pools/${activePoolRef.current}/bills`, { cache: 'no-store' });
-							if (billsResp.ok) {
-								const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
-								setBills(billsData.bills ?? []);
-							}
-
-							const balancesResp = await fetch(`/api/pools/${activePoolRef.current}/balances`, { cache: 'no-store' });
-							if (balancesResp.ok) {
-								const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
-								setBalances(balancesData.balances ?? {});
-							}
-						} catch (e) {
-							console.error('Failed to reload bills/balances:', e);
-						}
-					})();
-				}
-			} catch (e) {
-				// ignore parse errors
-			}
-		};
-
-		ws.onclose = () => {
-			wsRef.current = null;
-		};
+		connect();
 
 		return () => {
-			try { ws.close(); } catch (e) { }
+			isUnmounted = true;
+			if (reconnectTimer) clearTimeout(reconnectTimer);
+			if (ws) {
+				try { ws.close(); } catch (e) { }
+			}
 		};
 	}, []);
 
@@ -356,25 +372,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 			return;
 		}
 
-		async function loadBillsAndBalances() {
-			try {
-				const billsResp = await fetch(`/api/pools/${activePool?.id}/bills`, { cache: "no-store" });
-				if (billsResp.ok) {
-					const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
-					setBills(billsData.bills ?? []);
-				}
-
-				const balancesResp = await fetch(`/api/pools/${activePool?.id}/balances`, { cache: "no-store" });
-				if (balancesResp.ok) {
-					const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
-					setBalances(balancesData.balances ?? {});
-				}
-			} catch (e) {
-				console.error("Failed to load bills/balances:", e);
-			}
-		}
-
-		void loadBillsAndBalances();
+		void reloadData(activePool.id);
 	}, [activePool?.id]);
 
 	const inviteUrl = useMemo(() => (activePool ? buildInviteUrl(origin, activePool.id) : ""), [activePool, origin]);
@@ -490,9 +488,6 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 			}
 
 			setActiveSession({ pool: data.pool, member: data.member });
-			try {
-				sendWs({ type: 'member_joined', poolId: data.pool.id, member: data.member }, data.pool.id);
-			} catch (e) { }
 			setJoinCode(formatShareCode(data.pool.id));
 			setCreatePoolName("");
 			setCreateOwnerName("");
@@ -532,9 +527,6 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 			}
 
 			setActiveSession({ pool: data.pool, member: data.member });
-			try {
-				sendWs({ type: 'member_joined', poolId: data.pool.id, member: data.member }, data.pool.id);
-			} catch (e) { }
 			setJoinCode(formatShareCode(data.pool.id));
 			setJoinName("");
 			clearInviteUrl();
@@ -560,12 +552,6 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 			await fetch("/api/session", {
 				method: "DELETE",
 			});
-			try {
-				if (activePool && activeMember) {
-					sendWs({ type: 'member_left', poolId: activePool.id, member: activeMember });
-					sendWs({ type: 'unsubscribe', poolId: activePool.id });
-				}
-			} catch (e) { }
 			setActiveSession(null);
 			clearInviteUrl();
 			setNotice({
@@ -592,8 +578,6 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 			if (!response.ok || !data.ok) {
 				throw new Error(data.message ?? "Failed to delete the pool.");
 			}
-			try { sendWs({ type: 'pool_deleted', poolId: activePool.id }); } catch (e) { }
-
 			setActiveSession(null);
 			clearInviteUrl();
 			setNotice({
@@ -625,16 +609,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 			setNotice({ tone: "success", title: "Bill created", detail: `${title} was split among ${shares.length} member${shares.length === 1 ? "" : "s"}.` });
 			setShowCreateBill(false);
 
-			const billsResp = await fetch(`/api/pools/${activePool.id}/bills`, { cache: "no-store" });
-			if (billsResp.ok) {
-				const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
-				setBills(billsData.bills ?? []);
-			}
-			const balancesResp = await fetch(`/api/pools/${activePool.id}/balances`, { cache: "no-store" });
-			if (balancesResp.ok) {
-				const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
-				setBalances(balancesData.balances ?? {});
-			}
+			await reloadData(activePool.id);
 		} catch (error) {
 			setNotice({ tone: "error", title: "Could not create bill", detail: error instanceof Error ? error.message : "Try again in a moment." });
 		} finally {
@@ -655,16 +630,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 			setNotice({ tone: "success", title: "Bill updated", detail: `${title} has been updated.` });
 			setEditingBillId(null);
 
-			const billsResp = await fetch(`/api/pools/${activePool.id}/bills`, { cache: "no-store" });
-			if (billsResp.ok) {
-				const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
-				setBills(billsData.bills ?? []);
-			}
-			const balancesResp = await fetch(`/api/pools/${activePool.id}/balances`, { cache: "no-store" });
-			if (balancesResp.ok) {
-				const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
-				setBalances(balancesData.balances ?? {});
-			}
+			await reloadData(activePool.id);
 		} catch (error) {
 			setNotice({ tone: "error", title: "Could not update bill", detail: error instanceof Error ? error.message : "Try again in a moment." });
 		} finally {
@@ -699,19 +665,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 
 			setEditingBillId(null);
 
-			// reload bills
-			const billsResp = await fetch(`/api/pools/${activePool.id}/bills`, { cache: "no-store" });
-			if (billsResp.ok) {
-				const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
-				setBills(billsData.bills ?? []);
-			}
-
-			// reload balances
-			const balancesResp = await fetch(`/api/pools/${activePool.id}/balances`, { cache: "no-store" });
-			if (balancesResp.ok) {
-				const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
-				setBalances(balancesData.balances ?? {});
-			}
+			await reloadData(activePool.id);
 		} catch (error) {
 			setNotice({
 				tone: "error",
@@ -723,18 +677,35 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 		}
 	}
 
-	async function reloadData() {
-		if (!activePool) return;
+	async function reloadData(targetPoolId?: string) {
+		const poolId = targetPoolId || activePoolRef.current;
+		if (!poolId) return;
+
+		reloadSequenceRef.current += 1;
+		const seq = reloadSequenceRef.current;
+
 		try {
-			const billsResp = await fetch(`/api/pools/${activePool.id}/bills`, { cache: "no-store" });
+			const [billsResp, balancesResp] = await Promise.all([
+				fetch(`/api/pools/${poolId}/bills`, { cache: "no-store" }),
+				fetch(`/api/pools/${poolId}/balances`, { cache: "no-store" })
+			]);
+
+			if (seq !== reloadSequenceRef.current) {
+				console.debug("Ignored reload response: sequence mismatch", seq, reloadSequenceRef.current);
+				return;
+			}
+
 			if (billsResp.ok) {
 				const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
-				setBills(billsData.bills ?? []);
+				if (seq === reloadSequenceRef.current) {
+					setBills(billsData.bills ?? []);
+				}
 			}
-			const balancesResp = await fetch(`/api/pools/${activePool.id}/balances`, { cache: "no-store" });
 			if (balancesResp.ok) {
 				const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
-				setBalances(balancesData.balances ?? {});
+				if (seq === reloadSequenceRef.current) {
+					setBalances(balancesData.balances ?? {});
+				}
 			}
 		} catch (e) {
 			console.error("Failed to reload data:", e);
@@ -896,7 +867,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 							{loadingInvitePool ? "Checking pool..." : `Join ${invitePoolName || `pool ${poolCode}`}`}
 						</h1>
 						<p className="mt-2 text-sm text-zinc-600">
-							You've been invited to join this shared session.
+							You&apos;ve been invited to join this shared session.
 						</p>
 					</div>
 
