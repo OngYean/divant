@@ -11,3 +11,30 @@ services:
       MYSQL_RANDOM_ROOT_PASSWORD: '1'
     volumes:
       - ./mysql:/var/lib/mysql
+    networks:
+      - divant-network
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+      - "${WS_PORT:-3001}:3001"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      POOL_TIMEOUT_HOURS: 24
+      HOST: ${HOST}
+    depends_on:
+      - mysql
+    networks:
+      - divant-network
+
+networks:
+  divant-network:
+    driver: bridge
