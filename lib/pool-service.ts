@@ -450,9 +450,10 @@ export async function createBillWithShares(
 
 		// Insert bill shares
 		for (const share of shares) {
+			const isCreatorSelf = share.userId === createdByUserId;
 			await connection.query(
-				"INSERT INTO `bill_share` (bill_id, user_id, share_type, share_value, share_amount) VALUES (?, ?, ?, ?, ?)",
-				[billId, share.userId, splitMode, share.shareValue || null, share.shareAmount],
+				"INSERT INTO `bill_share` (bill_id, user_id, share_type, share_value, share_amount, is_paid, paid_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[billId, share.userId, splitMode, share.shareValue || null, share.shareAmount, isCreatorSelf ? 1 : 0, isCreatorSelf ? now : null],
 			);
 		}
 
@@ -605,9 +606,10 @@ export async function updateBill(
 
 		// Insert new shares
 		for (const share of shares) {
+			const isCreatorSelf = share.userId === bill.createdByUserId;
 			await connection.query(
-				"INSERT INTO `bill_share` (bill_id, user_id, share_type, share_value, share_amount) VALUES (?, ?, ?, ?, ?)",
-				[billId, share.userId, splitMode, share.shareValue || null, share.shareAmount],
+				"INSERT INTO `bill_share` (bill_id, user_id, share_type, share_value, share_amount, is_paid, paid_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[billId, share.userId, splitMode, share.shareValue || null, share.shareAmount, isCreatorSelf ? 1 : 0, isCreatorSelf ? now : null],
 			);
 		}
 
