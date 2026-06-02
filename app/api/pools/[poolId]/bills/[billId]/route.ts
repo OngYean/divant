@@ -36,6 +36,15 @@ export async function PUT(
 		if (!bill || bill.poolId !== poolId) {
 			return NextResponse.json({ error: "Bill not found" }, { status: 404 });
 		}
+		// Only the bill creator can edit the bill
+		if (active.member.id !== bill.createdByUserId) {
+			return NextResponse.json({ error: "Only the bill owner can edit" }, { status: 403 });
+		}
+		// Disallow editing if any share has already been paid
+		if (bill.shares.some((s) => s.isPaid)) {
+			return NextResponse.json({ error: "Cannot edit bill after any share is paid" }, { status: 403 });
+		}
+		/* Duplicate edit checks removed */
 
 		const body = await request.json() as {
 			title?: string;
@@ -90,6 +99,15 @@ export async function DELETE(
 		const bill = await loadBill(billIdNum);
 		if (!bill || bill.poolId !== poolId) {
 			return NextResponse.json({ error: "Bill not found" }, { status: 404 });
+		}
+
+		// Verify ownership: only bill creator can delete
+		if (active.member.id !== bill.createdByUserId) {
+			return NextResponse.json({ error: "Only the bill owner can delete" }, { status: 403 });
+		}
+		// Disallow deletion unless all shares are paid
+		if (!bill.shares.every((s) => s.isPaid)) {
+			return NextResponse.json({ error: "Cannot delete bill unless all shares are paid" }, { status: 403 });
 		}
 
 		await deleteBill(billIdNum);

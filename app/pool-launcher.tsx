@@ -1062,13 +1062,13 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 														You owe <span className="font-semibold text-zinc-950">{creditor?.name || owe.toUserId}</span>
 													</span>
 													<span className="text-sm font-semibold text-rose-600">
-														{owe.amount.toFixed(2)}
+														{bills[0]?.currency || "$"} {owe.amount.toFixed(2)}
 													</span>
 												</div>
 												{hasMutualDebt && (
 													<div className="flex items-center justify-between border-t border-zinc-200/60 pt-2 mt-1">
 														<span className="text-xs text-zinc-500 font-medium">
-															They owe you: <span className="font-semibold text-emerald-600">{myOwedFromCreditor.toFixed(2)}</span>
+															They owe you: <span className="font-semibold text-emerald-600">{bills[0]?.currency || "$"} {myOwedFromCreditor.toFixed(2)}</span>
 														</span>
 														<button
 															type="button"
@@ -1130,44 +1130,47 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 													</div>
 												</div>
 												<div className="flex gap-1">
-													{isCreator ? (
-														<>
+													{(() => {
+														const canEdit = isCreator && !bill.shares.some((s) => s.isPaid);
+														const canDelete = isCreator && bill.shares.every((s) => s.isPaid);
+														return isCreator ? (
+															<>
+																<button
+																	type="button"
+																	onClick={() => setEditingBillId(bill.id)}
+																	disabled={isBusy || !canEdit}
+																	className="h-7 px-2 text-xs font-semibold text-zinc-700 rounded border border-zinc-300 hover:bg-zinc-100 disabled:opacity-60"
+																>
+																	Edit
+																</button>
+																<button
+																	type="button"
+																	onClick={() => removeBill(bill.id)}
+																	disabled={isBusy || !canDelete}
+																	className="h-7 px-2 text-xs font-semibold text-rose-700 rounded border border-rose-300 hover:bg-rose-100 disabled:opacity-60"
+																>
+																	Delete
+																</button>
+															</>
+														) : (
 															<button
 																type="button"
-																onClick={() => {
-																	setEditingBillId(bill.id);
-																}}
+																onClick={() => setShowViewBillId(bill.id)}
 																disabled={isBusy}
-																className="h-7 px-2 text-xs font-semibold text-zinc-700 rounded border border-zinc-300 hover:bg-zinc-100 disabled:opacity-60"
+																className="h-7 px-2 text-xs font-semibold text-indigo-700 rounded border border-indigo-300 hover:bg-indigo-100 disabled:opacity-60"
 															>
-																Edit
+																View
 															</button>
-															<button
-																type="button"
-																onClick={() => removeBill(bill.id)}
-																disabled={isBusy}
-																className="h-7 px-2 text-xs font-semibold text-rose-700 rounded border border-rose-300 hover:bg-rose-100 disabled:opacity-60"
-															>
-																Delete
-															</button>
-														</>
-													) : (
-														<button
-															type="button"
-															onClick={() => setShowViewBillId(bill.id)}
-															disabled={isBusy}
-															className="h-7 px-2 text-xs font-semibold text-indigo-700 rounded border border-indigo-300 hover:bg-indigo-100 disabled:opacity-60"
-														>
-															View
-														</button>
-													)}
+														);
+													})()}
 												</div>
 											</div>
 
 											{(() => {
 												const myShare = bill.shares.find((s) => s.userId === activeMember.id);
-												const paidSharesCount = bill.shares.filter((s) => s.isPaid).length;
-												const totalSharesCount = bill.shares.length;
+												const myUserId = activeMember?.id;
+												const paidSharesCount = bill.shares.filter((s) => s.isPaid && s.userId !== myUserId).length;
+												const totalSharesCount = bill.shares.filter((s) => s.userId !== myUserId).length;
 
 												return (
 													<div className="mt-2.5 pt-2 border-t border-zinc-200/60 flex flex-wrap items-center justify-between gap-2">
@@ -1176,7 +1179,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 																<span className="text-xs text-zinc-500 font-medium">
 																	Your Share: <span className="font-semibold text-zinc-950">{bill.currency} {myShare.shareAmount.toFixed(2)}</span>
 																	{myShare.offsetAmount !== undefined && myShare.offsetAmount > 0.005 && !myShare.isPaid && (
-																		<span className="text-zinc-500"> ({(myShare.shareAmount - myShare.offsetAmount).toFixed(2)} left)</span>
+																		<span className="text-zinc-500"> ({bill.currency} {(myShare.shareAmount - myShare.offsetAmount).toFixed(2)} left)</span>
 																	)}
 																</span>
 																{myShare.isPaid ? (
@@ -1439,7 +1442,7 @@ export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCod
 													<div className="text-xs text-zinc-500 mt-0.5">
 														Owes {targetBill.currency} {share.shareAmount.toFixed(2)}
 														{share.offsetAmount !== undefined && share.offsetAmount > 0.005 && !share.isPaid && (
-															<span className="text-zinc-500"> ({(share.shareAmount - share.offsetAmount).toFixed(2)} left)</span>
+															<span className="text-zinc-500"> ({targetBill.currency} {(share.shareAmount - share.offsetAmount).toFixed(2)} left)</span>
 														)}
 													</div>
 												</div>
