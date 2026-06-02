@@ -1,9 +1,31 @@
 import { NextResponse } from "next/server";
 
 import { POOL_SESSION_COOKIE_NAME, ensureMySqlSchema } from "../../../../lib/mysql";
-import { deletePoolWithSession, readSessionCookie } from "../../../../lib/pool-service";
+import { deletePoolWithSession, readSessionCookie, loadPoolRecord } from "../../../../lib/pool-service";
 
 export const runtime = "nodejs";
+
+export async function GET(request: Request, context: { params: Promise<{ poolId: string }> }) {
+	void request;
+
+	try {
+		const { poolId } = await context.params;
+		await ensureMySqlSchema();
+		const poolRecord = await loadPoolRecord(poolId);
+		if (!poolRecord) {
+			return NextResponse.json({ ok: false, message: "Pool not found or has expired." }, { status: 404 });
+		}
+		return NextResponse.json({ ok: true, name: poolRecord.name }, { status: 200 });
+	} catch (error) {
+		return NextResponse.json(
+			{
+				ok: false,
+				message: error instanceof Error ? error.message : "Failed to load the pool.",
+			},
+			{ status: 503 },
+		);
+	}
+}
 
 export async function DELETE(request: Request, context: { params: Promise<{ poolId: string }> }) {
 	void request;

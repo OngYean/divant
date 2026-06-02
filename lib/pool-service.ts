@@ -28,7 +28,6 @@ export type PoolRecord = {
 	name: string;
 	createdAt: string;
 	lastActiveAt: string;
-	lastActionAt: string;
 	expiresAt: string;
 	members: PoolMemberRecord[];
 };
@@ -54,14 +53,14 @@ function isPoolExpired(expiresAt: unknown) {
 	return new Date(String(expiresAt)).getTime() <= Date.now();
 }
 
-async function loadPoolRecord(poolId: string) {
+export async function loadPoolRecord(poolId: string) {
 	const pool = getMySqlPool();
 	if (!pool) {
 		return null;
 	}
 
 	const [poolRows] = await pool.query(
-		"SELECT id, name, created_at, last_active_at, last_action_at, expires_at FROM `pool` WHERE id = ? LIMIT 1",
+		"SELECT id, name, created_at, last_active_at, expires_at FROM `pool` WHERE id = ? LIMIT 1",
 		[poolId],
 	);
 	const records = poolRows as Array<Record<string, unknown>>;
@@ -90,7 +89,6 @@ async function loadPoolRecord(poolId: string) {
 			name: String(poolRow.name),
 			createdAt: toIsoTimestamp(poolRow.created_at),
 			lastActiveAt: toIsoTimestamp(poolRow.last_active_at),
-			lastActionAt: toIsoTimestamp(poolRow.last_action_at),
 			expiresAt: toIsoTimestamp(poolRow.expires_at),
 			members,
 		};
@@ -190,8 +188,8 @@ export async function createPoolWithOwner(poolName: string, ownerName: string) {
 	try {
 		await connection.beginTransaction();
 		await connection.query(
-			"INSERT INTO `pool` (id, name, created_at, last_active_at, last_action_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-			[poolId, normalizedPoolName, now, now, now, expiresAt],
+			"INSERT INTO `pool` (id, name, created_at, last_active_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+			[poolId, normalizedPoolName, now, now, expiresAt],
 		);
 		await connection.query(
 			"INSERT INTO `user` (id, pool_id, name, normalized_name, session_token_hash, is_owner, joined_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
@@ -274,7 +272,7 @@ export async function joinPoolWithName(poolId: string, memberName: string) {
 			);
 		}
 
-		await connection.query("UPDATE `pool` SET last_active_at = CURRENT_TIMESTAMP(3), last_action_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [normalizedPoolId]);
+		await connection.query("UPDATE `pool` SET last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [normalizedPoolId]);
 		await connection.commit();
 	} catch (error) {
 		await connection.rollback();
@@ -391,4 +389,335 @@ export async function deletePoolWithSession(session: SessionCookieValue) {
 
 export function getClientSessionCookieName() {
 	return POOL_SESSION_COOKIE_NAME;
+}
+
+// Bill types
+export type BillShare = {
+	userId: string;
+	shareAmount: number;
+	shareValue?: number;
+};
+
+export type Bill = {
+	id: number;
+	poolId: string;
+	createdByUserId: string;
+	title: string;
+	totalAmount: number;
+	currency: string;
+	splitMode: "equal" | "custom" | "fixed";
+	shares: BillShare[];
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type UserBalance = {
+	userId: string;
+	owes: Array<{ toUserId: string; amount: number }>;
+	owed: Array<{ fromUserId: string; amount: number }>;
+};
+
+export async function createBillWithShares(
+	poolId: string,
+	createdByUserId: string,
+	title: string,
+	totalAmount: number,
+	currency: string,
+	splitMode: "equal" | "custom" | "fixed",
+	shares: BillShare[],
+): Promise<Bill> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		throw new Error("Database connection is not available.");
+	}
+
+	const connection = await pool.getConnection();
+	const now = new Date();
+	let billId: number = 0;
+
+	try {
+		await connection.beginTransaction();
+
+		// Insert bill
+		const [insertResult] = await connection.query(
+			"INSERT INTO `bill` (pool_id, created_by_user_id, title, total_amount, currency, split_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			[poolId, createdByUserId, title, totalAmount, currency, splitMode, now, now],
+		);
+		billId = (insertResult as { insertId: number }).insertId;
+
+		// Insert bill shares
+		for (const share of shares) {
+			await connection.query(
+				"INSERT INTO `bill_share` (bill_id, user_id, share_type, share_value, share_amount) VALUES (?, ?, ?, ?, ?)",
+				[billId, share.userId, splitMode, share.shareValue || null, share.shareAmount],
+			);
+		}
+
+		// Update pool last_active_at
+		await connection.query("UPDATE `pool` SET last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [poolId]);
+
+		await connection.commit();
+
+		return {
+			id: billId,
+			poolId,
+			createdByUserId,
+			title,
+			totalAmount,
+			currency,
+			splitMode,
+			shares,
+			createdAt: now.toISOString(),
+			updatedAt: now.toISOString(),
+		};
+	} catch (error) {
+		await connection.rollback();
+		throw error;
+	} finally {
+		connection.release();
+	}
+}
+
+export async function loadBill(billId: number): Promise<Bill | null> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		return null;
+	}
+
+	const [billRows] = await pool.query(
+		"SELECT id, pool_id, created_by_user_id, title, total_amount, currency, split_mode, created_at, updated_at FROM `bill` WHERE id = ? LIMIT 1",
+		[billId],
+	);
+	const billRecords = billRows as Array<Record<string, unknown>>;
+	const billRow = billRecords[0];
+
+	if (!billRow) {
+		return null;
+	}
+
+	const [shareRows] = await pool.query(
+		"SELECT user_id, share_type, share_value, share_amount FROM `bill_share` WHERE bill_id = ?",
+		[billId],
+	);
+	const shareRecords = shareRows as Array<Record<string, unknown>>;
+	const shares = shareRecords.map((row) => ({
+		userId: String(row.user_id),
+		shareAmount: parseFloat(String(row.share_amount)),
+		shareValue: row.share_value ? parseFloat(String(row.share_value)) : undefined,
+	}));
+
+	return {
+		id: Number(billRow.id),
+		poolId: String(billRow.pool_id),
+		createdByUserId: String(billRow.created_by_user_id),
+		title: String(billRow.title),
+		totalAmount: parseFloat(String(billRow.total_amount)),
+		currency: String(billRow.currency),
+		splitMode: String(billRow.split_mode) as "equal" | "custom" | "fixed",
+		shares,
+		createdAt: toIsoTimestamp(billRow.created_at),
+		updatedAt: toIsoTimestamp(billRow.updated_at),
+	};
+}
+
+export async function loadPoolBills(poolId: string): Promise<Bill[]> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		return [];
+	}
+
+	const [billRows] = await pool.query(
+		"SELECT id, pool_id, created_by_user_id, title, total_amount, currency, split_mode, created_at, updated_at FROM `bill` WHERE pool_id = ? ORDER BY created_at DESC",
+		[poolId],
+	);
+	const billRecords = billRows as Array<Record<string, unknown>>;
+
+	const bills: Bill[] = [];
+	for (const billRow of billRecords) {
+		const [shareRows] = await pool.query(
+			"SELECT user_id, share_type, share_value, share_amount FROM `bill_share` WHERE bill_id = ?",
+			[billRow.id],
+		);
+		const shareRecords = shareRows as Array<Record<string, unknown>>;
+		const shares = shareRecords.map((row) => ({
+			userId: String(row.user_id),
+			shareAmount: parseFloat(String(row.share_amount)),
+			shareValue: row.share_value ? parseFloat(String(row.share_value)) : undefined,
+		}));
+
+		bills.push({
+			id: Number(billRow.id),
+			poolId: String(billRow.pool_id),
+			createdByUserId: String(billRow.created_by_user_id),
+			title: String(billRow.title),
+			totalAmount: parseFloat(String(billRow.total_amount)),
+			currency: String(billRow.currency),
+			splitMode: String(billRow.split_mode) as "equal" | "custom" | "fixed",
+			shares,
+			createdAt: toIsoTimestamp(billRow.created_at),
+			updatedAt: toIsoTimestamp(billRow.updated_at),
+		});
+	}
+
+	return bills;
+}
+
+export async function updateBill(
+	billId: number,
+	title: string,
+	totalAmount: number,
+	splitMode: "equal" | "custom" | "fixed",
+	shares: BillShare[],
+): Promise<Bill> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		throw new Error("Database connection is not available.");
+	}
+
+	const bill = await loadBill(billId);
+	if (!bill) {
+		throw new Error("Bill not found.");
+	}
+
+	const connection = await pool.getConnection();
+	const now = new Date();
+
+	try {
+		await connection.beginTransaction();
+
+		// Update bill
+		await connection.query(
+			"UPDATE `bill` SET title = ?, total_amount = ?, split_mode = ?, updated_at = ? WHERE id = ?",
+			[title, totalAmount, splitMode, now, billId],
+		);
+
+		// Delete old shares
+		await connection.query("DELETE FROM `bill_share` WHERE bill_id = ?", [billId]);
+
+		// Insert new shares
+		for (const share of shares) {
+			await connection.query(
+				"INSERT INTO `bill_share` (bill_id, user_id, share_type, share_value, share_amount) VALUES (?, ?, ?, ?, ?)",
+				[billId, share.userId, splitMode, share.shareValue || null, share.shareAmount],
+			);
+		}
+
+		// Update pool last_active_at
+		await connection.query("UPDATE `pool` SET last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [bill.poolId]);
+
+		await connection.commit();
+
+		return {
+			id: billId,
+			poolId: bill.poolId,
+			createdByUserId: bill.createdByUserId,
+			title,
+			totalAmount,
+			currency: bill.currency,
+			splitMode,
+			shares,
+			createdAt: bill.createdAt,
+			updatedAt: now.toISOString(),
+		};
+	} catch (error) {
+		await connection.rollback();
+		throw error;
+	} finally {
+		connection.release();
+	}
+}
+
+export async function deleteBill(billId: number): Promise<void> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		throw new Error("Database connection is not available.");
+	}
+
+	const bill = await loadBill(billId);
+	if (!bill) {
+		throw new Error("Bill not found.");
+	}
+
+	const connection = await pool.getConnection();
+
+	try {
+		await connection.beginTransaction();
+
+		// Delete bill (shares cascade delete)
+		await connection.query("DELETE FROM `bill` WHERE id = ?", [billId]);
+
+		// Update pool last_active_at
+		await connection.query("UPDATE `pool` SET last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [bill.poolId]);
+
+		await connection.commit();
+	} catch (error) {
+		await connection.rollback();
+		throw error;
+	} finally {
+		connection.release();
+	}
+}
+
+export async function calculatePoolBalances(poolId: string): Promise<Record<string, UserBalance>> {
+	const pool = getMySqlPool();
+	if (!pool) {
+		return {};
+	}
+
+	// Get all bills for the pool
+	const [billRows] = await pool.query(
+		"SELECT id FROM `bill` WHERE pool_id = ?",
+		[poolId],
+	);
+	const billRecords = billRows as Array<Record<string, unknown>>;
+	const billIds = billRecords.map((b) => Number(b.id));
+
+	// Initialize balances for all users in pool
+	const [userRows] = await pool.query(
+		"SELECT id FROM `user` WHERE pool_id = ?",
+		[poolId],
+	);
+	const userRecords = userRows as Array<Record<string, unknown>>;
+	const balances: Record<string, UserBalance> = {};
+	for (const user of userRecords) {
+		const userId = String(user.id);
+		balances[userId] = { userId, owes: [], owed: [] };
+	}
+
+	// Calculate balances from shares
+	for (const billId of billIds) {
+		const bill = await loadBill(billId);
+		if (!bill) continue;
+
+		// For each share, the user owes the bill creator
+		for (const share of bill.shares) {
+			const shareAmount = share.shareAmount;
+
+			// Track who owes whom
+			if (!balances[share.userId]) {
+				balances[share.userId] = { userId: share.userId, owes: [], owed: [] };
+			}
+			if (!balances[bill.createdByUserId]) {
+				balances[bill.createdByUserId] = { userId: bill.createdByUserId, owes: [], owed: [] };
+			}
+
+			// Add to owes list
+			const existingOwe = balances[share.userId].owes.find((o) => o.toUserId === bill.createdByUserId);
+			if (existingOwe) {
+				existingOwe.amount += shareAmount;
+			} else {
+				balances[share.userId].owes.push({ toUserId: bill.createdByUserId, amount: shareAmount });
+			}
+
+			// Add to owed list
+			const existingOwed = balances[bill.createdByUserId].owed.find((o) => o.fromUserId === share.userId);
+			if (existingOwed) {
+				existingOwed.amount += shareAmount;
+			} else {
+				balances[bill.createdByUserId].owed.push({ fromUserId: share.userId, amount: shareAmount });
+			}
+		}
+	}
+
+	return balances;
 }

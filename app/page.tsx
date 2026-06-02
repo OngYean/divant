@@ -9,6 +9,7 @@ type PageProps = {
 export default async function Page({ searchParams }: PageProps) {
 	const params = await searchParams;
 	const initialPoolCode = typeof params?.pool === "string" ? params.pool.trim().toUpperCase() : "";
+	const host = process.env.HOST || "";
 
-	return <PoolLauncher initialPoolCode={initialPoolCode} />;
+	return <PoolLauncher initialPoolCode={initialPoolCode} host={host} />;
 }

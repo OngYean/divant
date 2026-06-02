@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import Link from "next/link";
 import QRCode from "react-qr-code";
+import BillForm from "./bill-form";
 
 type PoolMember = {
 	id: string;
@@ -25,6 +26,31 @@ type PoolRecord = {
 type ActiveSession = {
 	pool: PoolRecord;
 	member: PoolMember;
+};
+
+type BillShare = {
+	userId: string;
+	shareAmount: number;
+	shareValue?: number;
+};
+
+type Bill = {
+	id: number;
+	poolId: string;
+	createdByUserId: string;
+	title: string;
+	totalAmount: number;
+	currency: string;
+	splitMode: "equal" | "custom" | "fixed";
+	shares: BillShare[];
+	createdAt: string;
+	updatedAt: string;
+};
+
+type UserBalance = {
+	userId: string;
+	owes: Array<{ toUserId: string; amount: number }>;
+	owed: Array<{ fromUserId: string; amount: number }>;
 };
 
 type NoticeTone = "success" | "error" | "info";
@@ -68,18 +94,20 @@ function Panel({
 	children,
 	className = "",
 }: {
-	title: string;
+	title?: string;
 	subtitle?: string;
 	children: React.ReactNode;
 	className?: string;
 }) {
 	return (
 		<section className={`flex min-h-0 flex-col rounded-3xl border border-zinc-200/80 bg-white/90 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] backdrop-blur sm:p-5 ${className}`}>
-			<div className="mb-3 sm:mb-4">
-				<h2 className="text-base font-semibold text-zinc-950">{title}</h2>
-				{subtitle ? <p className="mt-1 text-sm leading-6 text-zinc-600">{subtitle}</p> : null}
-			</div>
-			<div className="min-h-0 flex-1">{children}</div>
+			{title || subtitle ? (
+				<div className="mb-3 sm:mb-4">
+					{title ? <h2 className="text-base font-semibold text-zinc-950">{title}</h2> : null}
+					{subtitle ? <p className="mt-1 text-sm leading-6 text-zinc-600">{subtitle}</p> : null}
+				</div>
+			) : null}
+			<div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-1">{children}</div>
 		</section>
 	);
 }
@@ -97,19 +125,60 @@ async function readJson<T>(response: Response) {
 	return (await response.json()) as T;
 }
 
-export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: string }) {
+export default function PoolLauncher({ initialPoolCode, host }: { initialPoolCode: string; host?: string }) {
 	const [sessionLoaded, setSessionLoaded] = useState(false);
-	const [origin] = useState(() => (typeof window === "undefined" ? "" : window.location.origin));
+	const [origin] = useState(() => {
+		if (typeof window === "undefined") return "";
+		if (host) {
+			const cleanHost = host.trim();
+			if (cleanHost.includes("://")) {
+				return cleanHost;
+			}
+			return `${window.location.protocol}//${cleanHost}`;
+		}
+		return window.location.origin;
+	});
+	const [poolCode, setPoolCode] = useState(initialPoolCode);
 	const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
 	const [createPoolName, setCreatePoolName] = useState("");
 	const [createOwnerName, setCreateOwnerName] = useState("");
 	const [joinCode, setJoinCode] = useState(formatShareCode(initialPoolCode));
 	const [joinName, setJoinName] = useState("");
 	const [notice, setNotice] = useState<{ tone: NoticeTone; title: string; detail: string } | null>(null);
+	const [invitePoolName, setInvitePoolName] = useState<string | null>(null);
+	const [loadingInvitePool, setLoadingInvitePool] = useState(false);
+	const [showShareModal, setShowShareModal] = useState(false);
+	const isInviteMode = useMemo(() => {
+		if (!poolCode) return false;
+		if (!activeSession) return true;
+		return activeSession.pool.id.toUpperCase() !== poolCode.toUpperCase();
+	}, [poolCode, activeSession]);
 	const [isBusy, setIsBusy] = useState(false);
+
+	function clearInviteUrl() {
+		if (typeof window !== "undefined") {
+			window.history.replaceState(null, "", window.location.pathname);
+		}
+		setPoolCode("");
+	}
+
+	const [bills, setBills] = useState<Bill[]>([]);
+	const [balances, setBalances] = useState<Record<string, UserBalance>>({});
+	const [showCreateBill, setShowCreateBill] = useState(false);
+	const [editingBillId, setEditingBillId] = useState<number | null>(null);
+
 	const wsRef = useRef<WebSocket | null>(null);
 	const activePoolRef = useRef<string | null>(null);
 	const activeMemberRef = useRef<PoolMember | null>(null);
+
+	// Auto-dismiss notice after 5 seconds
+	useEffect(() => {
+		if (!notice) return;
+		const timer = setTimeout(() => {
+			setNotice(null);
+		}, 5000);
+		return () => clearTimeout(timer);
+	}, [notice]);
 
 	// open websocket connection once
 	useEffect(() => {
@@ -129,7 +198,7 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 				try {
 					ws.send(JSON.stringify({ type: 'subscribe', poolId: pid }));
 					console.debug('ws sent subscribe on open', pid);
-				} catch (e) {}
+				} catch (e) { }
 			}
 		};
 
@@ -165,21 +234,41 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 					setActiveSession((prev) => (prev && prev.pool.id === poolId ? null : prev));
 					setNotice({ tone: 'info', title: 'Pool removed', detail: 'This pool was deleted.' });
 				}
+
+				if (type === 'bill_created' || type === 'bill_updated' || type === 'bill_deleted') {
+					// Reload bills and balances when any bill change occurs
+					(async () => {
+						if (!activePoolRef.current) return;
+						try {
+							const billsResp = await fetch(`/api/pools/${activePoolRef.current}/bills`, { cache: 'no-store' });
+							if (billsResp.ok) {
+								const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
+								setBills(billsData.bills ?? []);
+							}
+
+							const balancesResp = await fetch(`/api/pools/${activePoolRef.current}/balances`, { cache: 'no-store' });
+							if (balancesResp.ok) {
+								const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
+								setBalances(balancesData.balances ?? {});
+							}
+						} catch (e) {
+							console.error('Failed to reload bills/balances:', e);
+						}
+					})();
+				}
 			} catch (e) {
 				// ignore parse errors
 			}
 		};
 
 		ws.onclose = () => {
-			wsRef.current = undefined;
+			wsRef.current = null;
 		};
 
 		return () => {
-			try { ws.close(); } catch (e) {}
+			try { ws.close(); } catch (e) { }
 		};
 	}, []);
-
-    
 
 	useEffect(() => {
 		async function loadSession() {
@@ -219,106 +308,156 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 		activePoolRef.current = activePool?.id ?? null;
 		activeMemberRef.current = activeMember ?? null;
 	}, [activePool, activeMember]);
-	const inviteUrl = useMemo(() => (activePool ? buildInviteUrl(origin, activePool.id) : ""), [activePool, origin]);
-
-	// hide pool info by default on small screens to save vertical space
-	const [showPoolInfo, setShowPoolInfo] = useState(true);
 
 	useEffect(() => {
-		if (typeof window === "undefined") return;
-		setShowPoolInfo(window.innerWidth >= 640);
-	}, []);
+		if (!poolCode) return;
+		if (activeSession && activeSession.pool.id.toUpperCase() === poolCode.toUpperCase()) {
+			return;
+		}
 
-		// ensure we subscribe to pool updates when we have an active session
-		useEffect(() => {
-			if (!activePool) return;
-			const ws = wsRef.current;
-			if (!ws) return;
+		let aborted = false;
+		async function fetchPoolName() {
+			setLoadingInvitePool(true);
+			try {
+				const res = await fetch(`/api/pools/${encodeURIComponent(poolCode)}`);
+				if (!res.ok) {
+					throw new Error("Pool not found");
+				}
+				const data = await res.json();
+				if (!aborted && data.ok) {
+					setInvitePoolName(data.name);
+				}
+			} catch (err) {
+				console.error("Failed to load pool info:", err);
+			} finally {
+				if (!aborted) setLoadingInvitePool(false);
+			}
+		}
+		void fetchPoolName();
+		return () => {
+			aborted = true;
+		};
+	}, [poolCode, activeSession]);
 
+	useEffect(() => {
+		if (!activePool) {
+			setBills([]);
+			setBalances({});
+			return;
+		}
+
+		async function loadBillsAndBalances() {
+			try {
+				const billsResp = await fetch(`/api/pools/${activePool?.id}/bills`, { cache: "no-store" });
+				if (billsResp.ok) {
+					const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
+					setBills(billsData.bills ?? []);
+				}
+
+				const balancesResp = await fetch(`/api/pools/${activePool?.id}/balances`, { cache: "no-store" });
+				if (balancesResp.ok) {
+					const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
+					setBalances(balancesData.balances ?? {});
+				}
+			} catch (e) {
+				console.error("Failed to load bills/balances:", e);
+			}
+		}
+
+		void loadBillsAndBalances();
+	}, [activePool?.id]);
+
+	const inviteUrl = useMemo(() => (activePool ? buildInviteUrl(origin, activePool.id) : ""), [activePool, origin]);
+
+	// ensure we subscribe to pool updates when we have an active session
+	useEffect(() => {
+		if (!activePool) return;
+		const ws = wsRef.current;
+		if (!ws) return;
+
+		const sendSubscribe = () => {
+			try { ws.send(JSON.stringify({ type: 'subscribe', poolId: activePool.id })); } catch (e) { }
+		};
+
+		if (ws.readyState === WebSocket.OPEN) {
+			sendSubscribe();
+			return;
+		}
+
+		const onOpen = () => sendSubscribe();
+		ws.addEventListener?.('open', onOpen);
+		return () => ws.removeEventListener?.('open', onOpen);
+	}, [activePool?.id]);
+
+	// helper to send via websocket
+	const pendingSubscribeResolvers = new Map<string, Array<() => void>>();
+
+	async function sendWs(message: any, ensureSubscribeForPool?: string) {
+		const ws = wsRef.current;
+		if (!ws) return;
+
+		const doSend = (msg: any) => {
+			try {
+				console.debug('sendWs send', msg);
+				ws.send(JSON.stringify(msg));
+			} catch (e) { console.debug('sendWs error', e); }
+		};
+
+		if (ensureSubscribeForPool) {
+			const poolId = ensureSubscribeForPool;
 			const sendSubscribe = () => {
-				try { ws.send(JSON.stringify({ type: 'subscribe', poolId: activePool.id })); } catch (e) {}
+				try { doSend({ type: 'subscribe', poolId }); } catch (e) { }
 			};
 
 			if (ws.readyState === WebSocket.OPEN) {
 				sendSubscribe();
-				return;
-			}
-
-			const onOpen = () => sendSubscribe();
-			ws.addEventListener?.('open', onOpen);
-			return () => ws.removeEventListener?.('open', onOpen);
-		}, [activePool?.id]);
-
-		// helper to send via websocket; if needed, ensure a subscribe is sent before a member_joined
-		const pendingSubscribeResolvers = new Map<string, Array<() => void>>();
-
-		async function sendWs(message: any, ensureSubscribeForPool?: string) {
-			const ws = wsRef.current;
-			if (!ws) return;
-
-			const doSend = (msg: any) => {
-				try {
-					console.debug('sendWs send', msg);
-					ws.send(JSON.stringify(msg));
-				} catch (e) { console.debug('sendWs error', e); }
-			};
-
-			if (ensureSubscribeForPool) {
-				const poolId = ensureSubscribeForPool;
-				const sendSubscribe = () => {
-					try { doSend({ type: 'subscribe', poolId }); } catch (e) {}
-				};
-
-				if (ws.readyState === WebSocket.OPEN) {
-					sendSubscribe();
-				} else {
-					const onopen = () => { sendSubscribe(); ws.removeEventListener('open', onopen); };
-					ws.addEventListener('open', onopen);
-				}
-
-				// wait for subscribed ack or timeout
-				await new Promise<void>((resolve) => {
-					const arr = pendingSubscribeResolvers.get(poolId) ?? [];
-					let finished = false;
-					const cleanup = () => {
-						const cur = pendingSubscribeResolvers.get(poolId) ?? [];
-						const i = cur.indexOf(wrapped);
-						if (i >= 0) cur.splice(i, 1);
-						if (cur.length === 0) pendingSubscribeResolvers.delete(poolId);
-					};
-					const wrapped = () => {
-						if (finished) return;
-						finished = true;
-						clearTimeout(timer);
-						cleanup();
-						resolve();
-					};
-					arr.push(wrapped);
-					pendingSubscribeResolvers.set(poolId, arr);
-					// fallback timeout
-					const timer = setTimeout(() => {
-						if (finished) return;
-						finished = true;
-						cleanup();
-						resolve();
-					}, 2000);
-				});
-
-				// after ack or timeout, send the message
-				try { doSend(message); } catch (e) {}
-				return;
-			}
-
-			if (ws.readyState === WebSocket.OPEN) {
-				doSend(message);
 			} else {
-				const onopen = () => {
-					doSend(message);
-					ws.removeEventListener('open', onopen);
-				};
+				const onopen = () => { sendSubscribe(); ws.removeEventListener('open', onopen); };
 				ws.addEventListener('open', onopen);
 			}
+
+			// wait for subscribed ack or timeout
+			await new Promise<void>((resolve) => {
+				const arr = pendingSubscribeResolvers.get(poolId) ?? [];
+				let finished = false;
+				const cleanup = () => {
+					const cur = pendingSubscribeResolvers.get(poolId) ?? [];
+					const i = cur.indexOf(wrapped);
+					if (i >= 0) cur.splice(i, 1);
+					if (cur.length === 0) pendingSubscribeResolvers.delete(poolId);
+				};
+				const wrapped = () => {
+					if (finished) return;
+					finished = true;
+					clearTimeout(timer);
+					cleanup();
+					resolve();
+				};
+				arr.push(wrapped);
+				pendingSubscribeResolvers.set(poolId, arr);
+				// fallback timeout
+				const timer = setTimeout(() => {
+					if (finished) return;
+					finished = true;
+					cleanup();
+					resolve();
+				}, 2000);
+			});
+
+			try { doSend(message); } catch (e) { }
+			return;
 		}
+
+		if (ws.readyState === WebSocket.OPEN) {
+			doSend(message);
+		} else {
+			const onopen = () => {
+				doSend(message);
+				ws.removeEventListener('open', onopen);
+			};
+			ws.addEventListener('open', onopen);
+		}
+	}
 
 	async function createPool(nextPoolName: string, nextOwnerName: string) {
 		setIsBusy(true);
@@ -340,13 +479,13 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 			}
 
 			setActiveSession({ pool: data.pool, member: data.member });
-			// subscribe + broadcast join
 			try {
 				sendWs({ type: 'member_joined', poolId: data.pool.id, member: data.member }, data.pool.id);
-			} catch (e) {}
+			} catch (e) { }
 			setJoinCode(formatShareCode(data.pool.id));
 			setCreatePoolName("");
 			setCreateOwnerName("");
+			clearInviteUrl();
 			setNotice({
 				tone: "success",
 				title: "Pool created",
@@ -385,9 +524,10 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 			setActiveSession({ pool: data.pool, member: data.member });
 			try {
 				sendWs({ type: 'member_joined', poolId: data.pool.id, member: data.member }, data.pool.id);
-			} catch (e) {}
+			} catch (e) { }
 			setJoinCode(formatShareCode(data.pool.id));
 			setJoinName("");
+			clearInviteUrl();
 			setNotice({
 				tone: "success",
 				title: data.member.name === nextJoinName.trim() ? "Joined pool" : "Welcome back",
@@ -410,14 +550,14 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 			await fetch("/api/session", {
 				method: "DELETE",
 			});
-			// notify others before clearing local session
 			try {
 				if (activePool && activeMember) {
 					sendWs({ type: 'member_left', poolId: activePool.id, member: activeMember });
 					sendWs({ type: 'unsubscribe', poolId: activePool.id });
 				}
-			} catch (e) {}
+			} catch (e) { }
 			setActiveSession(null);
+			clearInviteUrl();
 			setNotice({
 				tone: "info",
 				title: "Left the pool",
@@ -442,10 +582,10 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 			if (!response.ok || !data.ok) {
 				throw new Error(data.message ?? "Failed to delete the pool.");
 			}
-				// broadcast deletion and clear session
-				try { sendWs({ type: 'pool_deleted', poolId: activePool.id }); } catch (e) {}
+			try { sendWs({ type: 'pool_deleted', poolId: activePool.id }); } catch (e) { }
 
-				setActiveSession(null);
+			setActiveSession(null);
+			clearInviteUrl();
 			setNotice({
 				tone: "info",
 				title: "Pool deleted",
@@ -455,6 +595,117 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 			setNotice({
 				tone: "error",
 				title: "Could not delete the pool",
+				detail: error instanceof Error ? error.message : "Try again in a moment.",
+			});
+		} finally {
+			setIsBusy(false);
+		}
+	}
+
+	async function createBill(title: string, amount: number, splitMode: "equal" | "custom" | "fixed", shares: BillShare[]) {
+		if (!activePool || !activeMember) return;
+		setIsBusy(true);
+		try {
+			const response = await fetch(`/api/pools/${activePool.id}/bills`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ title, totalAmount: amount, splitMode, shares }),
+			});
+			if (!response.ok) throw new Error("Failed to create bill");
+			setNotice({ tone: "success", title: "Bill created", detail: `${title} was split among ${shares.length} member${shares.length === 1 ? "" : "s"}.` });
+			setShowCreateBill(false);
+
+			const billsResp = await fetch(`/api/pools/${activePool.id}/bills`, { cache: "no-store" });
+			if (billsResp.ok) {
+				const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
+				setBills(billsData.bills ?? []);
+			}
+			const balancesResp = await fetch(`/api/pools/${activePool.id}/balances`, { cache: "no-store" });
+			if (balancesResp.ok) {
+				const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
+				setBalances(balancesData.balances ?? {});
+			}
+		} catch (error) {
+			setNotice({ tone: "error", title: "Could not create bill", detail: error instanceof Error ? error.message : "Try again in a moment." });
+		} finally {
+			setIsBusy(false);
+		}
+	}
+
+	async function updateBillData(title: string, amount: number, splitMode: "equal" | "custom" | "fixed", shares: BillShare[]) {
+		if (!activePool || editingBillId === null) return;
+		setIsBusy(true);
+		try {
+			const response = await fetch(`/api/pools/${activePool.id}/bills/${editingBillId}`, {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ title, totalAmount: amount, splitMode, shares }),
+			});
+			if (!response.ok) throw new Error("Failed to update bill");
+			setNotice({ tone: "success", title: "Bill updated", detail: `${title} has been updated.` });
+			setEditingBillId(null);
+
+			const billsResp = await fetch(`/api/pools/${activePool.id}/bills`, { cache: "no-store" });
+			if (billsResp.ok) {
+				const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
+				setBills(billsData.bills ?? []);
+			}
+			const balancesResp = await fetch(`/api/pools/${activePool.id}/balances`, { cache: "no-store" });
+			if (balancesResp.ok) {
+				const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
+				setBalances(balancesData.balances ?? {});
+			}
+		} catch (error) {
+			setNotice({ tone: "error", title: "Could not update bill", detail: error instanceof Error ? error.message : "Try again in a moment." });
+		} finally {
+			setIsBusy(false);
+		}
+	}
+
+	async function removeBill(billId: number) {
+		if (!activePool) {
+			return;
+		}
+
+		if (!confirm("Delete this bill? This cannot be undone.")) {
+			return;
+		}
+
+		setIsBusy(true);
+		try {
+			const response = await fetch(`/api/pools/${activePool.id}/bills/${billId}`, {
+				method: "DELETE",
+			});
+
+			if (!response.ok) {
+				throw new Error("Failed to delete bill");
+			}
+
+			setNotice({
+				tone: "success",
+				title: "Bill deleted",
+				detail: "The bill has been removed.",
+			});
+
+			setEditingBillId(null);
+
+			// reload bills
+			const billsResp = await fetch(`/api/pools/${activePool.id}/bills`, { cache: "no-store" });
+			if (billsResp.ok) {
+				const billsData = await readJson<ApiResponse<{ bills: Bill[] }>>(billsResp);
+				setBills(billsData.bills ?? []);
+			}
+
+			// reload balances
+			const balancesResp = await fetch(`/api/pools/${activePool.id}/balances`, { cache: "no-store" });
+			if (balancesResp.ok) {
+				const balancesData = await readJson<ApiResponse<{ balances: Record<string, UserBalance> }>>(balancesResp);
+				setBalances(balancesData.balances ?? {});
+			}
+		} catch (error) {
+			setNotice({
+				tone: "error",
+				title: "Could not delete bill",
 				detail: error instanceof Error ? error.message : "Try again in a moment.",
 			});
 		} finally {
@@ -508,10 +759,102 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 							</div>
 						</div>
 					</div>
-						<div className="mt-5 space-y-2 text-center text-xs text-zinc-600 sm:mt-8 sm:space-y-3">
+					<div className="mt-5 space-y-2 text-center text-xs text-zinc-600 sm:mt-8 sm:space-y-3">
 						<div className="h-3 w-24 animate-pulse rounded-full bg-zinc-100" />
 						<div className="h-3 w-32 animate-pulse rounded-full bg-zinc-100" />
 					</div>
+				</div>
+			</main>
+		);
+	}
+
+	if (isInviteMode) {
+		return (
+			<main className="flex items-center justify-center min-h-[80vh] px-3 py-3 text-zinc-950 sm:px-4">
+				<div className="w-full max-w-sm">
+					<div className="mb-5 text-center sm:mb-8">
+						<p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-600">Divant</p>
+						<h1 className="mt-2 text-2xl font-semibold text-zinc-950 sm:mt-3">
+							{loadingInvitePool ? "Checking pool..." : `Join ${invitePoolName || `pool ${poolCode}`}`}
+						</h1>
+						<p className="mt-2 text-sm text-zinc-600">
+							You've been invited to join this shared session.
+						</p>
+					</div>
+
+					<Panel
+						title="Enter your name"
+						subtitle={invitePoolName ? `Join "${invitePoolName}" to start tracking and splitting expenses.` : "Enter your name to join the pool and start sharing expenses."}
+					>
+						<form
+							onSubmit={(event) => {
+								event.preventDefault();
+								if (!joinName.trim()) {
+									setNotice({
+										tone: "error",
+										title: "Name is required",
+										detail: "Please enter your display name.",
+									});
+									return;
+								}
+								void joinPool(poolCode, joinName);
+							}}
+							className="space-y-3 sm:space-y-4"
+						>
+							<div>
+								<label className="mb-2 block text-sm font-medium text-zinc-800" htmlFor="join-name">Your name</label>
+								<input
+									id="join-name"
+									value={joinName}
+									onChange={(event) => setJoinName(event.target.value)}
+									placeholder="Ari"
+									disabled={isBusy}
+									className="h-12 w-full rounded-2xl border border-zinc-300 bg-white px-4 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:opacity-60 sm:h-14"
+								/>
+							</div>
+							<button type="submit" disabled={isBusy} className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-zinc-950 px-4 text-base font-semibold text-white transition hover:bg-zinc-800 disabled:opacity-60 sm:h-14">
+								Join pool
+							</button>
+
+							{activeSession ? (
+								<button
+									type="button"
+									onClick={() => {
+										window.history.replaceState(null, "", window.location.pathname);
+										window.location.reload();
+									}}
+									className="inline-flex h-12 w-full items-center justify-center rounded-2xl border border-zinc-300 bg-white px-4 text-base font-semibold text-zinc-900 transition hover:border-zinc-400 hover:bg-zinc-50 sm:h-14"
+								>
+									Back to {activeSession.pool.name}
+								</button>
+							) : null}
+						</form>
+					</Panel>
+
+					{notice ? (
+						<div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-md rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur-md transition-all duration-300 ${notice.tone === "success"
+							? "border-emerald-200 bg-emerald-50/95 text-emerald-900 shadow-emerald-100/50"
+							: notice.tone === "error"
+								? "border-rose-200 bg-rose-50/95 text-rose-900 shadow-rose-100/50"
+								: "border-zinc-200 bg-zinc-50/95 text-zinc-900 shadow-zinc-100/50"
+							}`}>
+							<div className="flex items-start justify-between gap-2">
+								<div className="flex-1">
+									<div className="font-semibold">{notice.title}</div>
+									<div className="mt-1 leading-relaxed text-xs opacity-90">{notice.detail}</div>
+								</div>
+								<button
+									onClick={() => setNotice(null)}
+									className="text-zinc-400 hover:text-zinc-600 transition p-1 -mr-1"
+									aria-label="Close notification"
+								>
+									<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+										<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+									</svg>
+								</button>
+							</div>
+						</div>
+					) : null}
 				</div>
 			</main>
 		);
@@ -521,87 +864,44 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 		return (
 			<main className="flex overflow-hidden px-3 py-3 text-zinc-950 sm:px-4 lg:px-6">
 				<div className="mx-auto flex min-h-0 w-full max-w-5xl flex-col gap-3">
-					{showPoolInfo ? (
-						<header className="rounded-[2rem] border border-zinc-200 bg-white/85 p-4 shadow-[0_28px_70px_rgba(15,23,42,0.08)] backdrop-blur sm:p-5">
-							<div className="flex flex-wrap items-start justify-between gap-3">
-								<div>
-									<p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-600">Current pool</p>
-									<h1 className="mt-2 text-2xl font-semibold tracking-tight text-zinc-950 sm:text-4xl">{activePool.name}</h1>
-									<p className="mt-1 text-sm leading-5 text-zinc-600 sm:mt-2 sm:leading-6">
-										You are in as {activeMember.name}. Share code {activePool.id} stays in the link and the square.
-									</p>
-								</div>
-								<div className="rounded-2xl bg-zinc-950 px-3 py-2 text-right text-white shadow-lg sm:px-4 sm:py-3">
-									<div className="text-[11px] font-medium uppercase tracking-[0.24em] text-zinc-400">You are</div>
-									<div className="mt-1 text-sm font-semibold">{activeMember.isOwner ? "Owner" : "Member"}</div>
-								</div>
-							</div>
-							<div className="mt-3 grid grid-cols-3 gap-2 sm:mt-4 sm:gap-3">
-								<Stat label="Members" value={`${activePool.members.length}`} />
-								<Stat label="Share code" value={activePool.id} />
-								<Stat label="Expires" value={formatExpiresIn(activePool.expiresAt)} />
-							</div>
-							<div className="mt-3 sm:hidden text-right">
-								<button type="button" onClick={() => setShowPoolInfo(false)} className="text-xs font-medium text-zinc-500 hover:underline">
-									Hide
-								</button>
-							</div>
-						</header>
-					) : (
-						<div className="rounded-[1.5rem] border border-zinc-200 bg-white/85 p-3 shadow sm:hidden flex items-center justify-between">
-							<div>
-								<div className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-600">Current pool</div>
-								<div className="mt-1 text-lg font-semibold text-zinc-950">{activePool.name}</div>
-							</div>
-							<div className="flex items-center gap-2">
-								<button type="button" onClick={() => setShowPoolInfo(true)} className="text-sm font-medium text-emerald-600">
-									Details
-								</button>
-							</div>
+					<header className="rounded-[1.5rem] border border-zinc-200 bg-white/85 p-4 shadow-sm flex items-center justify-between gap-3">
+						<div>
+							<p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-600">Current pool</p>
+							<h1 className="text-lg font-semibold text-zinc-950">{activePool.name}</h1>
 						</div>
-					)}
+						<div className="text-right">
+							<p className="text-xs font-medium uppercase tracking-[0.24em] text-zinc-400">You are</p>
+							<p className="text-sm font-semibold text-zinc-950">{activeMember.name} ({activeMember.isOwner ? "Owner" : "Member"})</p>
+						</div>
+					</header>
 
-					<div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[1.2fr_0.8fr]">
-						{showPoolInfo ? (
-							<Panel title="Share with others" subtitle="Copy the link or let people scan the square from your phone.">
-								<div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px] sm:gap-4">
-									<div className="space-y-3">
-										<div className="rounded-3xl border border-zinc-200 bg-zinc-50 p-3 sm:p-4">
-											<div className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">Share link</div>
-											<div className="mt-2 break-all text-sm leading-6 text-zinc-900">{inviteUrl}</div>
-										</div>
-										<div className="grid gap-2 sm:grid-cols-2 sm:gap-3">
-											<button type="button" onClick={copyInviteLink} className="inline-flex h-12 items-center justify-center rounded-2xl bg-zinc-950 px-4 text-sm font-semibold text-white transition hover:bg-zinc-800">
-												Copy link
-											</button>
-											<button type="button" onClick={shareInviteLink} className="inline-flex h-12 items-center justify-center rounded-2xl border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-900 transition hover:border-zinc-400 hover:bg-zinc-50">
-												Share
-											</button>
-										</div>
-									</div>
-									<div className="hidden items-center justify-center rounded-3xl border border-zinc-200 bg-white p-4 sm:flex">
-										{inviteUrl ? <QRCode value={inviteUrl} size={176} /> : null}
-									</div>
-								</div>
-							</Panel>
-						) : (
-							<div className="hidden sm:block" />
-						)}
+					<div className="grid min-h-0 flex-1 gap-3 grid-cols-[4fr_8fr]">
+						<Panel>
+							<div className="flex h-full items-center justify-center py-6">
+								<button
+									type="button"
+									onClick={() => setShowShareModal(true)}
+									className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-6 text-sm font-semibold text-white shadow-md transition hover:bg-emerald-500 active:scale-95 cursor-pointer"
+								>
+									<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+										<path strokeLinecap="round" strokeLinejoin="round" d="M8.684 10.742l-1.996-1.141c-.496-.283-.496-.994 0-1.278l1.996-1.141m0 7.636l1.996 1.141m0 0a3 3 0 103-5.278 3 3 0 00-3 5.278zM6 16a3 3 0 100-6 3 3 0 000 6zm10-8a3 3 0 100-6 3 3 0 000 6z" />
+									</svg>
+									Invite
+								</button>
+							</div>
+						</Panel>
 
-						<Panel title="People in the pool" subtitle="The first member is the owner. Everyone else is a joiner.">
+						<Panel>
 							<div className="space-y-2 sm:space-y-3">
 								{activePool.members.map((member) => (
 									<div key={member.id} className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 px-3 py-2 sm:px-4 sm:py-3">
 										<div>
-											<div className="text-sm font-semibold text-zinc-950">
+											<div className={`text-sm font-semibold ${member.isOwner ? "text-emerald-600" : "text-zinc-950"}`}>
 												{member.name}
 												{member.id === activeMember.id ? " (you)" : ""}
 											</div>
 											<div className="mt-1 hidden text-xs text-zinc-500 sm:block">Joined {formatDateTime(member.joinedAt)}</div>
 										</div>
-										<span className={`rounded-full px-3 py-1 text-xs font-semibold ${member.isOwner ? "bg-emerald-100 text-emerald-700" : "bg-zinc-200 text-zinc-700"}`}>
-											{member.isOwner ? "Owner" : "Member"}
-										</span>
 									</div>
 								))}
 							</div>
@@ -618,13 +918,216 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 						</Panel>
 					</div>
 
-					{notice ? (
-						<div className={`rounded-2xl border px-4 py-3 text-sm shadow-sm ${notice.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : notice.tone === "error" ? "border-rose-200 bg-rose-50 text-rose-800" : "border-zinc-200 bg-zinc-50 text-zinc-700"}`}>
-							<div className="font-semibold">{notice.title}</div>
-							<div className="mt-1 leading-6">{notice.detail}</div>
-						</div>
-					) : null}
+					<Panel title="Bills & Splits" subtitle="Track expenses and who owes whom.">
+						{bills.length === 0 ? (
+							<div className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 p-4 text-center text-sm text-zinc-600">
+								No bills yet. Create one to get started.
+							</div>
+						) : (
+							<div className="space-y-2">
+								{bills.map((bill) => {
+									const creator = activePool.members.find((m) => m.id === bill.createdByUserId);
+									const isEditing = editingBillId === bill.id;
+									return (
+										<div key={bill.id}>
+											{isEditing ? (
+												<BillForm
+													isBusy={isBusy}
+													poolMembers={activePool.members}
+													currentUserId={activeMember.id}
+													initialTitle={bill.title}
+													initialAmount={bill.totalAmount.toString()}
+													initialSplitMode={bill.splitMode}
+													initialShares={bill.shares}
+													onSubmit={updateBillData}
+													onCancel={() => setEditingBillId(null)}
+													accentColor="yellow"
+												/>
+											) : (
+												<div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
+													<div className="flex items-start justify-between gap-2">
+														<div className="flex-1 min-w-0">
+															<div className="font-semibold text-zinc-950 truncate">{bill.title}</div>
+															<div className="text-xs text-zinc-600 mt-1">
+																{creator?.name} • {bill.totalAmount.toFixed(2)} {bill.currency}
+															</div>
+														</div>
+														<div className="flex gap-1">
+															<button
+																type="button"
+																onClick={() => {
+																	setEditingBillId(bill.id);
+																}}
+																disabled={isBusy}
+																className="h-7 px-2 text-xs font-semibold text-zinc-700 rounded border border-zinc-300 hover:bg-zinc-100 disabled:opacity-60"
+															>
+																Edit
+															</button>
+															<button
+																type="button"
+																onClick={() => removeBill(bill.id)}
+																disabled={isBusy}
+																className="h-7 px-2 text-xs font-semibold text-rose-700 rounded border border-rose-300 hover:bg-rose-100 disabled:opacity-60"
+															>
+																Delete
+															</button>
+														</div>
+													</div>
+												</div>
+											)}
+										</div>
+									);
+								})}
+							</div>
+						)}
+						<button
+							type="button"
+							onClick={() => setShowCreateBill(true)}
+							className="mt-3 inline-flex h-10 items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-3 text-sm font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
+						>
+							New bill
+						</button>
+					</Panel>
+
+					<Panel title="Balances" subtitle="Who you owe after all expenses.">
+						{(() => {
+							const myBalance = balances[activeMember.id];
+							const myOwes = myBalance?.owes?.filter((owe) => owe.toUserId !== activeMember.id && owe.amount > 0.005) || [];
+
+							if (myOwes.length === 0) {
+								return (
+									<div className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 p-4 text-center text-sm font-medium text-emerald-700">
+										You are clear, for now
+									</div>
+								);
+							}
+
+							return (
+								<div className="space-y-2">
+									{myOwes.map((owe) => {
+										const creditor = activePool.members.find((m) => m.id === owe.toUserId);
+										return (
+											<div key={owe.toUserId} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3 flex justify-between items-center">
+												<span className="text-sm font-medium text-zinc-700">
+													You owe <span className="font-semibold text-zinc-950">{creditor?.name || owe.toUserId}</span>
+												</span>
+												<span className="text-sm font-semibold text-rose-600">
+													{owe.amount.toFixed(2)}
+												</span>
+											</div>
+										);
+									})}
+								</div>
+							);
+						})()}
+					</Panel>
 				</div>
+
+				{notice ? (
+					<div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-md rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur-md transition-all duration-300 ${notice.tone === "success"
+						? "border-emerald-200 bg-emerald-50/95 text-emerald-900 shadow-emerald-100/50"
+						: notice.tone === "error"
+							? "border-rose-200 bg-rose-50/95 text-rose-900 shadow-rose-100/50"
+							: "border-zinc-200 bg-zinc-50/95 text-zinc-900 shadow-zinc-100/50"
+						}`}>
+						<div className="flex items-start justify-between gap-2">
+							<div className="flex-1">
+								<div className="font-semibold">{notice.title}</div>
+								<div className="mt-1 leading-relaxed text-xs opacity-90">{notice.detail}</div>
+							</div>
+							<button
+								onClick={() => setNotice(null)}
+								className="text-zinc-400 hover:text-zinc-600 transition p-1 -mr-1"
+								aria-label="Close notification"
+							>
+								<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+									<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+								</svg>
+							</button>
+						</div>
+					</div>
+				) : null}
+
+				{showShareModal ? (
+					<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/65 backdrop-blur-sm">
+						<div className="w-full max-w-sm rounded-3xl border border-zinc-200 bg-white p-5 shadow-2xl">
+							<div className="flex items-center justify-between mb-4">
+								<h3 className="text-base font-semibold text-zinc-950">Invite to Pool</h3>
+								<button
+									type="button"
+									onClick={() => setShowShareModal(false)}
+									className="rounded-full p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition"
+								>
+									<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+										<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+									</svg>
+								</button>
+							</div>
+
+							<div className="flex flex-col items-center justify-center gap-4 py-2">
+								<div className="rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm flex items-center justify-center">
+									{inviteUrl ? <QRCode value={inviteUrl} size={160} /> : null}
+								</div>
+
+								<div className="w-full space-y-2 mt-2">
+									<div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3 text-center">
+										<span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Share Link</span>
+										<p className="mt-1 break-all text-xs text-zinc-900 font-mono select-all leading-normal">{inviteUrl}</p>
+									</div>
+
+									<div className="grid grid-cols-2 gap-2 pt-2">
+										<button
+											type="button"
+											onClick={() => {
+												void copyInviteLink();
+											}}
+											className="inline-flex h-12 items-center justify-center rounded-2xl bg-zinc-950 text-sm font-semibold text-white transition hover:bg-zinc-800"
+										>
+											Copy Link
+										</button>
+										<button
+											type="button"
+											onClick={() => {
+												void shareInviteLink();
+											}}
+											className="inline-flex h-12 items-center justify-center rounded-2xl border border-zinc-300 bg-white text-sm font-semibold text-zinc-900 transition hover:border-zinc-400 hover:bg-zinc-50"
+										>
+											Share
+										</button>
+									</div>
+								</div>
+							</div>
+						</div>
+					</div>
+				) : null}
+
+				{showCreateBill && (
+					<div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/65 backdrop-blur-sm">
+						<div className="w-full max-w-lg rounded-3xl border border-zinc-200 bg-white p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+							<div className="flex items-center justify-between mb-4">
+								<h3 className="text-base font-semibold text-zinc-950">Create New Bill</h3>
+								<button
+									type="button"
+									onClick={() => setShowCreateBill(false)}
+									className="rounded-full p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition"
+								>
+									<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+										<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+									</svg>
+								</button>
+							</div>
+
+							<BillForm
+								isBusy={isBusy}
+								poolMembers={activePool.members}
+								currentUserId={activeMember.id}
+								onSubmit={createBill}
+								onCancel={() => setShowCreateBill(false)}
+								accentColor="emerald"
+							/>
+						</div>
+					</div>
+				)}
 			</main>
 		);
 	}
@@ -634,7 +1137,7 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 			<div className="mx-auto flex min-h-0 w-full max-w-5xl flex-col gap-3">
 				{/* description moved to /pool-info to make space for create/join UI */}
 				<div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[1.05fr_0.95fr]">
-					<Panel title="Create a pool" subtitle="Set the pool name and your display name. You will be dropped into the share screen immediately.">
+					<Panel title="Create a pool">
 						<form
 							onSubmit={(event) => {
 								event.preventDefault();
@@ -659,13 +1162,13 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 								<label className="mb-2 block text-sm font-medium text-zinc-800" htmlFor="create-owner-name">Your name</label>
 								<input id="create-owner-name" value={createOwnerName} onChange={(event) => setCreateOwnerName(event.target.value)} placeholder="Ari" disabled={isBusy} className="h-12 w-full rounded-2xl border border-zinc-300 bg-white px-4 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:opacity-60 sm:h-14" />
 							</div>
-								<button type="submit" disabled={isBusy} className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-zinc-950 px-4 text-base font-semibold text-white transition hover:bg-zinc-800 disabled:opacity-60 sm:h-14">
+							<button type="submit" disabled={isBusy} className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-zinc-950 px-4 text-base font-semibold text-white transition hover:bg-zinc-800 disabled:opacity-60 sm:h-14">
 								Create pool
 							</button>
 						</form>
 					</Panel>
 
-					<Panel title="Join a pool" subtitle="Enter the shared code and your display name. If your saved details are lost later, joining by the same name will bring you back to the same pool.">
+					<Panel title="Join a pool" subtitle="You can also join a pool by the invitation link or by scanning the QR code.">
 						<form
 							onSubmit={(event) => {
 								event.preventDefault();
@@ -697,7 +1200,7 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 								<label className="mb-2 block text-sm font-medium text-zinc-800" htmlFor="join-name">Your name</label>
 								<input id="join-name" value={joinName} onChange={(event) => setJoinName(event.target.value)} placeholder="Ari" disabled={isBusy} className="h-12 w-full rounded-2xl border border-zinc-300 bg-white px-4 text-base text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:opacity-60 sm:h-14" />
 							</div>
-								<button type="submit" disabled={isBusy} className="inline-flex h-12 w-full items-center justify-center rounded-2xl border border-zinc-300 bg-white px-4 text-base font-semibold text-zinc-900 transition hover:border-zinc-400 hover:bg-zinc-50 disabled:opacity-60 sm:h-14">
+							<button type="submit" disabled={isBusy} className="inline-flex h-12 w-full items-center justify-center rounded-2xl border border-zinc-300 bg-white px-4 text-base font-semibold text-zinc-900 transition hover:border-zinc-400 hover:bg-zinc-50 disabled:opacity-60 sm:h-14">
 								Join pool
 							</button>
 						</form>
@@ -711,9 +1214,27 @@ export default function PoolLauncher({ initialPoolCode }: { initialPoolCode: str
 				</div>
 
 				{notice ? (
-					<div className={`rounded-2xl border px-4 py-3 text-sm shadow-sm ${notice.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : notice.tone === "error" ? "border-rose-200 bg-rose-50 text-rose-800" : "border-zinc-200 bg-zinc-50 text-zinc-700"}`}>
-						<div className="font-semibold">{notice.title}</div>
-						<div className="mt-1 leading-6">{notice.detail}</div>
+					<div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-md rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur-md transition-all duration-300 ${notice.tone === "success"
+						? "border-emerald-200 bg-emerald-50/95 text-emerald-900 shadow-emerald-100/50"
+						: notice.tone === "error"
+							? "border-rose-200 bg-rose-50/95 text-rose-900 shadow-rose-100/50"
+							: "border-zinc-200 bg-zinc-50/95 text-zinc-900 shadow-zinc-100/50"
+						}`}>
+						<div className="flex items-start justify-between gap-2">
+							<div className="flex-1">
+								<div className="font-semibold">{notice.title}</div>
+								<div className="mt-1 leading-relaxed text-xs opacity-90">{notice.detail}</div>
+							</div>
+							<button
+								onClick={() => setNotice(null)}
+								className="text-zinc-400 hover:text-zinc-600 transition p-1 -mr-1"
+								aria-label="Close notification"
+							>
+								<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+									<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+								</svg>
+							</button>
+						</div>
 					</div>
 				) : null}
 			</div>
